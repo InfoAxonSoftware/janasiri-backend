@@ -92,7 +92,40 @@ jobs:
 
           echo "Publish output is clean."
 
+      - name: Create app_offline.htm
+        run: |
+          set -euo pipefail
+          mkdir -p ./app_offline_deploy
+          {
+            printf '%s\n' '<!DOCTYPE html>'
+            printf '%s\n' '<html>'
+            printf '%s\n' '  <head><title>Maintenance</title></head>'
+            printf '%s\n' '  <body>'
+            printf '%s\n' '    <h1>Deployment in progress</h1>'
+            printf '%s\n' '    <p>This site is temporarily offline for a staging deployment. It will be back shortly.</p>'
+            printf '%s\n' '  </body>'
+            printf '%s\n' '</html>'
+          } > ./app_offline_deploy/app_offline.htm
+          echo "app_offline.htm created."
+
+      # Uploaded directly to the site root (outside publish_staging/, which is FTP-Deploy-Action's
+      # local-dir) so the deploy step below never touches or removes it — dangerous-clean-slate
+      # stays false and only publish_staging/ contents are synced. Connection details are passed
+      # only via environment variables; the script never prints the password.
+      - name: Take staging site offline (upload app_offline.htm)
+        id: take_offline
+        env:
+          FTP_SERVER: ${{ vars.MONSTER_STAGING_FTP_SERVER }}
+          FTP_USERNAME: ${{ vars.MONSTER_STAGING_FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.MONSTER_STAGING_FTP_PASSWORD }}
+          FTP_SERVER_DIR: ${{ vars.MONSTER_STAGING_SERVER_DIR }}
+        run: python3 .github/scripts/ftp_offline_toggle.py upload ./app_offline_deploy/app_offline.htm
+
+      - name: Wait 10 seconds for IIS to terminate the worker process
+        run: sleep 10
+
       - name: Deploy to MonsterASP staging via FTP
+        id: ftp_deploy
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
           server: ${{ vars.MONSTER_STAGING_FTP_SERVER }}
@@ -103,7 +136,23 @@ jobs:
           dangerous-clean-slate: false
           log-level: standard
 
+      # Only runs if the FTP-Deploy-Action step above succeeded — a failure there leaves
+      # app_offline.htm on the server on purpose (see the failure step at the bottom).
+      - name: Bring staging site back online (remove app_offline.htm)
+        id: bring_online
+        if: steps.ftp_deploy.outcome == 'success'
+        env:
+          FTP_SERVER: ${{ vars.MONSTER_STAGING_FTP_SERVER }}
+          FTP_USERNAME: ${{ vars.MONSTER_STAGING_FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.MONSTER_STAGING_FTP_PASSWORD }}
+          FTP_SERVER_DIR: ${{ vars.MONSTER_STAGING_SERVER_DIR }}
+        run: python3 .github/scripts/ftp_offline_toggle.py remove
+
+      - name: Wait 10 seconds for IIS to restart the application
+        run: sleep 10
+
       - name: Wait for staging API to become healthy
+        if: steps.bring_online.outcome == 'success'
         run: |
           set -euo pipefail
           HEALTH_URL="${{ vars.STAGING_API_URL }}/health"
@@ -120,3 +169,20 @@ jobs:
           fi
 
           echo "Staging API is healthy."
+
+      # Fires only when the site was actually taken offline and the FTP deployment itself did not
+      # succeed — i.e. a partially deployed application. app_offline.htm is deliberately left in
+      # place so IIS keeps serving the maintenance page instead of a broken app.
+      - name: FTP deployment failed — app_offline.htm left in place intentionally
+        if: always() && steps.take_offline.outcome == 'success' && steps.ftp_deploy.outcome != 'success'
+        run: |
+          echo "::error::Staging FTP deployment failed after the site was taken offline. app_offline.htm was intentionally NOT removed, so the staging site is showing a maintenance page instead of a possibly broken/partially-deployed application. Do not remove app_offline.htm from the server until the underlying deployment failure has been diagnosed and fixed, then re-run this workflow (a successful run will remove it automatically) or remove it manually only once you have confirmed the deployed files are complete and correct."
+          exit 1
+
+      # Fires only when the FTP deployment itself succeeded but removing app_offline.htm
+      # afterwards did not — the new files are on the server, but the site may still be offline.
+      - name: Warning — failed to bring staging site back online
+        if: always() && steps.ftp_deploy.outcome == 'success' && steps.bring_online.outcome != 'success'
+        run: |
+          echo "::warning::Staging deployment completed, but removing app_offline.htm afterwards failed (or was skipped). The staging site may still be offline behind the maintenance page. Manually check whether app_offline.htm is still present on the server and remove it once you've confirmed the deployed application is healthy."
+          exit 1
