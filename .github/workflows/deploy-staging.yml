@@ -1,0 +1,122 @@
+name: Deploy to Staging (Manual)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: janasiri-staging-deployment
+  cancel-in-progress: false
+
+jobs:
+  build-test-publish-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build -c Release --no-restore
+
+      - name: Test (Release)
+        run: dotnet test -c Release --no-build --verbosity normal
+
+      - name: Publish API
+        run: >
+          dotnet publish src/DistributionSystem.API/DistributionSystem.API.csproj
+          -c Release
+          -o ./publish_staging
+          --no-self-contained
+
+      - name: Verify required publish files exist
+        run: |
+          set -euo pipefail
+          PUBLISH_DIR="./publish_staging"
+
+          for f in "web.config" "DistributionSystem.API.dll" "DistributionSystem.API.runtimeconfig.json"; do
+            if [ ! -f "$PUBLISH_DIR/$f" ]; then
+              echo "::error::Required file missing from publish output: $f"
+              exit 1
+            fi
+          done
+          echo "All required files present."
+
+      # No PostgreSQL connection, no EF migrations, and no production secrets are used anywhere
+      # in this job prior to deployment — build/test/publish never start the app, so
+      # FileStorage:RootPath / ConnectionStrings:DefaultConnection / JwtSettings:Secret (all
+      # required only at application startup on the server) are never needed here.
+      - name: Verify publish output excludes dev/runtime/secret files
+        run: |
+          set -euo pipefail
+          PUBLISH_DIR="./publish_staging"
+
+          echo "Checking forbidden files/directories are absent..."
+          FORBIDDEN=(
+            "appsettings.Development.json"
+            "appsettings.Example.json"
+            ".local-storage"
+            "DistributionServer"
+          )
+          for name in "${FORBIDDEN[@]}"; do
+            if find "$PUBLISH_DIR" -iname "$name" | grep -q .; then
+              echo "::error::Forbidden file/directory found in publish output: $name"
+              exit 1
+            fi
+          done
+
+          echo "Checking for .env files..."
+          if find "$PUBLISH_DIR" -iname ".env*" | grep -q .; then
+            echo "::error::.env file found in publish output"
+            exit 1
+          fi
+
+          echo "Checking for a runtime uploads directory (wwwroot/uploads)..."
+          if find "$PUBLISH_DIR" -type d -ipath "*wwwroot/uploads*" | grep -q .; then
+            echo "::error::wwwroot/uploads was found in publish output"
+            exit 1
+          fi
+
+          echo "Checking for customer registration / KYC document artifacts..."
+          if find "$PUBLISH_DIR" -type d \( -iname "customer-registrations" -o -iname "kyc" \) | grep -q .; then
+            echo "::error::Customer registration / KYC document directories were found in publish output"
+            exit 1
+          fi
+
+          echo "Publish output is clean."
+
+      - name: Deploy to MonsterASP staging via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ vars.MONSTER_STAGING_FTP_SERVER }}
+          username: ${{ vars.MONSTER_STAGING_FTP_USERNAME }}
+          password: ${{ secrets.MONSTER_STAGING_FTP_PASSWORD }}
+          local-dir: ./publish_staging/
+          server-dir: ${{ vars.MONSTER_STAGING_SERVER_DIR }}
+          dangerous-clean-slate: false
+          log-level: standard
+
+      - name: Wait for staging API to become healthy
+        run: |
+          set -euo pipefail
+          HEALTH_URL="${{ vars.STAGING_API_URL }}/health"
+          echo "Checking $HEALTH_URL"
+
+          if ! curl --fail --silent --show-error \
+                --retry 10 \
+                --retry-delay 6 \
+                --retry-all-errors \
+                --max-time 10 \
+                "$HEALTH_URL"; then
+            echo "::error::Staging API did not become healthy at $HEALTH_URL"
+            exit 1
+          fi
+
+          echo "Staging API is healthy."
