@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+    <UserSecretsId>c270b106-e434-4bf4-9445-6bc7027b184a</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AspNetCore.HealthChecks.NpgSql" Version="9.0.0" />
+    <PackageReference Include="AspNetCoreRateLimit" Version="5.0.0" />
+    <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.1" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.3" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DistributionSystem.Application\DistributionSystem.Application.csproj" />
+    <ProjectReference Include="..\DistributionSystem.Infrastructure\DistributionSystem.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <!-- Keep environment-specific/local-only files out of publish output; they must never reach production. -->
+  <ItemGroup>
+    <Content Remove="appsettings.Development.json" />
+    <Content Remove="appsettings.Example.json" />
+    <Content Remove="wwwroot\uploads\**" />
+    <!-- Development-only file storage fallback (see FileStorageOptions) — never part of a deployment. -->
+    <Content Remove=".local-storage\**" />
+    <Compile Remove=".local-storage\**" />
+    <None Remove=".local-storage\**" />
+  </ItemGroup>
+
+</Project>

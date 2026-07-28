@@ -1,0 +1,75 @@
+# =========================
+# .NET Core & Build Outputs
+# =========================
+**/bin/
+**/obj/
+**/publish/
+publish/
+publish_output/
+**/artifacts/
+artifacts/
+DistributionServer/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.pfx
+*.zip
+
+# =========================
+# Logs
+# =========================
+**/logs/
+*.log
+time-debug.txt
+build_errors.txt
+
+# =========================
+# Test result / coverage output
+# =========================
+**/TestResults/
+*.trx
+*.coverage
+*.coveragexml
+coverage/
+
+# =========================
+# IDEs & OS Files
+# =========================
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# =========================
+# Frontend / Node
+# =========================
+**/node_modules/
+dist/
+build/
+
+# =========================
+# Secrets & Environments
+# =========================
+.env
+.env.*
+!.env.example
+!.env.production.template
+
+appsettings.Local.json
+appsettings.*.Local.json
+*.secrets.json
+secrets.json
+
+# =========================
+# Runtime upload / file storage directories
+# =========================
+src/DistributionSystem.API/wwwroot/uploads/
+.local-storage/
+**/.local-storage/
+# Found during pre-init safety scan: an unexpected runtime storage directory containing real
+# customer KYC documents landed here (outside the intended .local-storage/wwwroot locations).
+# Never track anything under this path.
+src/private/
+src/public/

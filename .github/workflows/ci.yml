@@ -1,0 +1,84 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build -c Release --no-restore
+
+      - name: Test (Release)
+        run: dotnet test -c Release --no-build --verbosity normal
+
+      - name: Publish API
+        run: >
+          dotnet publish src/DistributionSystem.API/DistributionSystem.API.csproj
+          -c Release
+          -o ./ci-publish
+          --no-self-contained
+
+      # No PostgreSQL connection, no EF migrations, and no production secrets are used anywhere
+      # in this job — the publish step only compiles and copies files, it never starts the app,
+      # so FileStorage:RootPath / ConnectionStrings:DefaultConnection / JwtSettings:Secret (all
+      # required only at application startup) are never needed here.
+      - name: Verify publish output excludes dev/runtime/secret files
+        run: |
+          set -euo pipefail
+          PUBLISH_DIR="./ci-publish"
+
+          echo "Checking required files exist..."
+          test -f "$PUBLISH_DIR/DistributionSystem.API.dll" || { echo "::error::DistributionSystem.API.dll is missing from publish output"; exit 1; }
+          test -f "$PUBLISH_DIR/web.config" || { echo "::error::web.config is missing from publish output"; exit 1; }
+
+          echo "Checking forbidden files/directories are absent..."
+          FORBIDDEN=(
+            "appsettings.Development.json"
+            "appsettings.Example.json"
+            ".local-storage"
+            "DistributionServer"
+          )
+          for name in "${FORBIDDEN[@]}"; do
+            if find "$PUBLISH_DIR" -iname "$name" | grep -q .; then
+              echo "::error::Forbidden file/directory found in publish output: $name"
+              exit 1
+            fi
+          done
+
+          echo "Checking for a runtime uploads directory..."
+          if find "$PUBLISH_DIR" -type d -ipath "*uploads*" | grep -q .; then
+            echo "::error::A runtime uploads directory was found in publish output"
+            exit 1
+          fi
+
+          echo "Checking for any tracked customer document artifacts..."
+          if find "$PUBLISH_DIR" -type d \( -iname "customer-registrations" -o -iname "rep-payments" -o -iname "quick-requests" \) | grep -q .; then
+            echo "::error::Private/customer document directories were found in publish output"
+            exit 1
+          fi
+
+          echo "Publish output is clean."
+
+      - name: Upload clean publish output
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-publish-${{ github.sha }}
+          path: ./ci-publish
+          retention-days: 3
+          if-no-files-found: error

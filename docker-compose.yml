@@ -1,0 +1,68 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: distribution-api
+    ports:
+      - "5000:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Production}
+      - ConnectionStrings__DefaultConnection=${CONNECTION_STRING}
+      - JwtSettings__Secret=${JWT_SECRET}
+      - JwtSettings__Issuer=${JWT_ISSUER:-DistributionSystem}
+      - JwtSettings__Audience=${JWT_AUDIENCE:-DistributionSystemClients}
+      - JwtSettings__AccessTokenExpirationMinutes=${JWT_ACCESS_MINUTES:-60}
+      - JwtSettings__RefreshTokenExpirationDays=${JWT_REFRESH_DAYS:-7}
+      - DatabaseSettings__AutoMigrateOnStartup=${DB_AUTOMIGRATE:-true}
+      - DatabaseSettings__SeedDataOnStartup=${DB_SEED_DATA:-false}
+      - DatabaseSettings__SeedSuperAdminOnStartup=${DB_SEED_SUPERADMIN:-true}
+      - SuperAdminSeed__Username=${SUPERADMIN_SEED_USERNAME}
+      - SuperAdminSeed__Email=${SUPERADMIN_SEED_EMAIL}
+      - SuperAdminSeed__Password=${SUPERADMIN_SEED_PASSWORD}
+      - SuperAdminSeed__PhoneNumber=${SUPERADMIN_SEED_PHONE}
+      - SuperAdminSeed__FullName=${SUPERADMIN_SEED_FULLNAME}
+      - SuperAdminSeed__Department=${SUPERADMIN_SEED_DEPARTMENT}
+      - SmtpSettings__Host=${SMTP_HOST:-smtp.gmail.com}
+      - SmtpSettings__Port=${SMTP_PORT:-587}
+      - SmtpSettings__Username=${SMTP_USERNAME:-}
+      - SmtpSettings__Password=${SMTP_PASSWORD:-}
+      - SmtpSettings__FromEmail=${SMTP_FROM_EMAIL:-noreply@example.com}
+      - SmtpSettings__FromName=${SMTP_FROM_NAME:-Distribution System}
+      - SmtpSettings__AdminEmail=${SMTP_ADMIN_EMAIL:-admin@example.com}
+      - SmtpSettings__EnableSsl=${SMTP_ENABLE_SSL:-true}
+      - CorsOrigins__0=${CORS_ORIGIN_0:-http://localhost:5173}
+      - CorsOrigins__1=${CORS_ORIGIN_1:-http://localhost:3000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - distribution-net
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: distribution-db
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-DistributionDB}
+      - POSTGRES_USER=${POSTGRES_USER:-openpg}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-openpg} -d ${POSTGRES_DB:-DistributionDB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - distribution-net
+
+volumes:
+  pgdata:
+
+networks:
+  distribution-net:
+    driver: bridge

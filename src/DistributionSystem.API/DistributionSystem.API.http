@@ -1,0 +1,6 @@
+@DistributionSystem.API_HostAddress = http://localhost:5101
+
+GET {{DistributionSystem.API_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
