@@ -245,3 +245,147 @@ public class FileStorageServiceTests : IDisposable
         (await service.ReadAsync("private/gallery/does-not-exist.png")).Should().BeNull();
     }
 }
+
+/// <summary>
+/// Covers <see cref="FileStorageRootResolver"/> directly — this is the single place a relative
+/// FileStorage:RootPath (e.g. MonsterASP's "../private", a sibling of the deployed wwwroot
+/// folder) is combined against ContentRootPath and normalized to an absolute path, so both
+/// PhysicalFileStorageService and Program.cs's public PhysicalFileProvider agree on the same
+/// physical location instead of resolving it independently (the bug that previously caused
+/// "The path must be absolute" at startup).
+/// </summary>
+public class FileStorageRootResolverTests : IDisposable
+{
+    private readonly string _contentRoot = Path.Combine(Path.GetTempPath(), "distsys-resolver-tests", Guid.NewGuid().ToString("N"), "wwwroot");
+
+    public FileStorageRootResolverTests() => Directory.CreateDirectory(_contentRoot);
+
+    public void Dispose()
+    {
+        var top = Path.GetDirectoryName(_contentRoot)!;
+        if (Directory.Exists(top)) Directory.Delete(top, recursive: true);
+    }
+
+    [Fact]
+    public void ResolveRoot_RelativeConfiguredRoot_ResolvesAgainstContentRootPath()
+    {
+        // Mirrors MonsterASP's layout: /wwwroot (ContentRootPath) with a sibling /private directory.
+        var resolved = FileStorageRootResolver.ResolveRoot("../private", _contentRoot, isDevelopment: false);
+
+        var expected = Path.GetFullPath(Path.Combine(_contentRoot, "../private"));
+        resolved.Should().Be(expected);
+        Path.IsPathRooted(resolved).Should().BeTrue();
+        resolved.Should().NotContain("..", "the resolved path must be fully normalized, not just combined");
+    }
+
+    [Fact]
+    public void ResolveRoot_DotLocalStorageConfiguredRoot_ResolvesAgainstContentRootPath()
+    {
+        var resolved = FileStorageRootResolver.ResolveRoot(".local-storage", _contentRoot, isDevelopment: false);
+
+        resolved.Should().Be(Path.GetFullPath(Path.Combine(_contentRoot, ".local-storage")));
+        Path.IsPathRooted(resolved).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ResolveRoot_AbsoluteConfiguredRoot_RemainsValidAndIsNormalized()
+    {
+        var absoluteInput = Path.Combine(_contentRoot, "..", "private"); // absolute but not normalized
+        Path.IsPathRooted(absoluteInput).Should().BeTrue();
+
+        var resolved = FileStorageRootResolver.ResolveRoot(absoluteInput, _contentRoot, isDevelopment: false);
+
+        resolved.Should().Be(Path.GetFullPath(absoluteInput));
+        Path.IsPathRooted(resolved).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ResolveRoot_BlankOutsideDevelopment_ThrowsClearly()
+    {
+        var act = () => FileStorageRootResolver.ResolveRoot(null, _contentRoot, isDevelopment: false);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*FileStorage:RootPath*");
+    }
+
+    [Fact]
+    public void ResolveRoot_BlankInDevelopment_FallsBackUnderContentRoot()
+    {
+        var resolved = FileStorageRootResolver.ResolveRoot(null, _contentRoot, isDevelopment: true);
+
+        resolved.Should().Be(Path.GetFullPath(Path.Combine(_contentRoot, ".local-storage")));
+    }
+
+    [Fact]
+    public void ResolveCategoryRoots_PublicAndPrivate_RemainInsideStorageRoot()
+    {
+        var effectiveRoot = FileStorageRootResolver.ResolveRoot("../private", _contentRoot, isDevelopment: false);
+
+        var (publicRoot, privateRoot) = FileStorageRootResolver.ResolveCategoryRoots(effectiveRoot, "public", "private");
+
+        FileStorageRootResolver.IsWithinRoot(publicRoot, effectiveRoot).Should().BeTrue();
+        FileStorageRootResolver.IsWithinRoot(privateRoot, effectiveRoot).Should().BeTrue();
+        publicRoot.Should().NotBe(privateRoot);
+    }
+
+    [Theory]
+    [InlineData("../elsewhere")]
+    [InlineData("../../elsewhere")]
+    [InlineData("public/../../elsewhere")]
+    public void ResolveCategoryRoots_TraversalInPublicDirectory_IsRejected(string maliciousPublicDirectory)
+    {
+        var effectiveRoot = FileStorageRootResolver.ResolveRoot("../private", _contentRoot, isDevelopment: false);
+
+        var act = () => FileStorageRootResolver.ResolveCategoryRoots(effectiveRoot, maliciousPublicDirectory, "private");
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*PublicDirectory*");
+    }
+
+    [Theory]
+    [InlineData("../elsewhere")]
+    [InlineData("../../elsewhere")]
+    public void ResolveCategoryRoots_TraversalInPrivateDirectory_IsRejected(string maliciousPrivateDirectory)
+    {
+        var effectiveRoot = FileStorageRootResolver.ResolveRoot("../private", _contentRoot, isDevelopment: false);
+
+        var act = () => FileStorageRootResolver.ResolveCategoryRoots(effectiveRoot, "public", maliciousPrivateDirectory);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*PrivateDirectory*");
+    }
+
+    [Fact]
+    public void ResolveCategoryRoots_AbsolutePublicDirectory_IsRejected()
+    {
+        var effectiveRoot = FileStorageRootResolver.ResolveRoot("../private", _contentRoot, isDevelopment: false);
+        var absoluteDirectory = OperatingSystem.IsWindows() ? @"C:\somewhere-else" : "/somewhere-else";
+
+        var act = () => FileStorageRootResolver.ResolveCategoryRoots(effectiveRoot, absoluteDirectory, "private");
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*PublicDirectory*");
+    }
+
+    [Fact]
+    public void ResolveCategoryRoots_BlankDirectoryName_IsRejected()
+    {
+        var effectiveRoot = FileStorageRootResolver.ResolveRoot("../private", _contentRoot, isDevelopment: false);
+
+        var act = () => FileStorageRootResolver.ResolveCategoryRoots(effectiveRoot, "  ", "private");
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*PublicDirectory*");
+    }
+
+    [Fact]
+    public void ResolveRoot_RelativeRootPath_ProducesAbsolutePathAcceptedByPhysicalFileProvider()
+    {
+        // Regression test for the exact production failure: PhysicalFileProvider throws
+        // ArgumentException ("The path must be absolute") when handed an un-resolved relative
+        // path. FileStorage__RootPath=../private (MonsterASP) must never reach it un-resolved.
+        var effectiveRoot = FileStorageRootResolver.ResolveRoot("../private", _contentRoot, isDevelopment: false);
+        var (publicRoot, _) = FileStorageRootResolver.ResolveCategoryRoots(effectiveRoot, "public", "private");
+        Directory.CreateDirectory(publicRoot);
+
+        Path.IsPathRooted(publicRoot).Should().BeTrue();
+        var act = () => new Microsoft.Extensions.FileProviders.PhysicalFileProvider(publicRoot);
+
+        act.Should().NotThrow();
+    }
+}

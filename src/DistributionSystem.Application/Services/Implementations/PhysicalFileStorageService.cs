@@ -56,9 +56,13 @@ public sealed class PhysicalFileStorageService : IFileStorageService
         _env = env;
         _logger = logger;
 
-        _effectiveRoot = ResolveEffectiveRoot(_options, env);
-        _publicRoot = Path.GetFullPath(Path.Combine(_effectiveRoot, _options.PublicDirectory));
-        _privateRoot = Path.GetFullPath(Path.Combine(_effectiveRoot, _options.PrivateDirectory));
+        // Centralized resolution: a relative RootPath (e.g. MonsterASP's "../private") is always
+        // combined against ContentRootPath and normalized to an absolute path here — the same
+        // resolver Program.cs uses for the public PhysicalFileProvider and startup validation, so
+        // every consumer agrees on the exact same physical location.
+        _effectiveRoot = FileStorageRootResolver.ResolveRoot(_options.RootPath, env.ContentRootPath, env.IsDevelopment());
+        (_publicRoot, _privateRoot) = FileStorageRootResolver.ResolveCategoryRoots(
+            _effectiveRoot, _options.PublicDirectory, _options.PrivateDirectory);
 
         // Kept only to resolve records written before this abstraction existed; never written to.
         _legacyUploadsRoot = Path.GetFullPath(Path.Combine(env.ContentRootPath, "wwwroot", "uploads"));
@@ -70,25 +74,6 @@ public sealed class PhysicalFileStorageService : IFileStorageService
             "File storage initialized. Root={RootConfigured} PublicDir={PublicDir} PrivateDir={PrivateDir}",
             string.IsNullOrWhiteSpace(_options.RootPath) ? "(development fallback)" : "(configured)",
             _options.PublicDirectory, _options.PrivateDirectory);
-    }
-
-    /// <summary>
-    /// Production requires FileStorage:RootPath to be set explicitly (fails startup clearly if not —
-    /// see also the eager validation in Program.cs). Development falls back to a folder under the
-    /// content root that is not machine-specific and is excluded from publish output.
-    /// </summary>
-    private static string ResolveEffectiveRoot(FileStorageOptions options, IWebHostEnvironment env)
-    {
-        if (!string.IsNullOrWhiteSpace(options.RootPath))
-            return Path.GetFullPath(options.RootPath);
-
-        if (env.IsDevelopment())
-            return Path.GetFullPath(Path.Combine(env.ContentRootPath, ".local-storage"));
-
-        throw new InvalidOperationException(
-            "FileStorage:RootPath must be configured outside Development (via the FileStorage__RootPath " +
-            "environment variable or appsettings.Production.json). Runtime files must not live inside the " +
-            "deployed application folder.");
     }
 
     public async Task<StoredFileResult> SaveAsync(
@@ -276,8 +261,7 @@ public sealed class PhysicalFileStorageService : IFileStorageService
     }
 
     private static bool IsWithinRoot(string candidateFullPath, string rootFullPath) =>
-        candidateFullPath.StartsWith(rootFullPath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-        || candidateFullPath.Equals(rootFullPath, StringComparison.OrdinalIgnoreCase);
+        FileStorageRootResolver.IsWithinRoot(candidateFullPath, rootFullPath);
 
     private static void EnsureWithinRoot(string candidateFullPath, string rootFullPath)
     {

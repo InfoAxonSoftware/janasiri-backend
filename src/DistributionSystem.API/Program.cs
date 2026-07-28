@@ -1,6 +1,7 @@
 using System.Text;
 using System.Security.Claims;
 using Microsoft.AspNetCore.HttpOverrides;
+using DistributionSystem.Application.Configuration;
 using DistributionSystem.Application.Services.Implementations;
 using DistributionSystem.Application.Services.Interfaces;
 using DistributionSystem.Application.Validators;
@@ -49,19 +50,19 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 
 // ===== File Storage =====
 // Runtime files (KYC documents, payment evidence, gallery/product images, ...) must live outside
-// the deployed application folder so redeploys never touch them. FileStorage:RootPath is required
-// in every environment except Development (see PhysicalFileStorageService.ResolveEffectiveRoot for
-// the Development fallback). Fail fast and clearly here rather than on first upload.
-builder.Services.Configure<DistributionSystem.Application.Configuration.FileStorageOptions>(
-    builder.Configuration.GetSection(DistributionSystem.Application.Configuration.FileStorageOptions.SectionName));
-if (!builder.Environment.IsDevelopment() &&
-    string.IsNullOrWhiteSpace(builder.Configuration[$"{DistributionSystem.Application.Configuration.FileStorageOptions.SectionName}:RootPath"]))
-{
-    throw new InvalidOperationException(
-        "FileStorage:RootPath must be configured outside Development (via the FileStorage__RootPath " +
-        "environment variable or appsettings.Production.json). It must point to a persistent directory " +
-        "outside the deployed application folder.");
-}
+// the deployed application folder so redeploys never touch them. FileStorageRootResolver is the
+// single source of truth for turning FileStorage:RootPath into an absolute path — a relative
+// value (e.g. MonsterASP's "../private", a sibling of the deployed wwwroot folder) is combined
+// against ContentRootPath and normalized here, then reused as-is below for the public static-file
+// provider so it can never disagree with what PhysicalFileStorageService resolves internally.
+// Resolving eagerly also fails startup clearly (missing/invalid config) rather than on first upload.
+var fileStorageConfigSection = builder.Configuration.GetSection(FileStorageOptions.SectionName);
+builder.Services.Configure<FileStorageOptions>(fileStorageConfigSection);
+var fileStorageOptionsAtStartup = fileStorageConfigSection.Get<FileStorageOptions>() ?? new FileStorageOptions();
+var fileStorageEffectiveRoot = FileStorageRootResolver.ResolveRoot(
+    fileStorageOptionsAtStartup.RootPath, builder.Environment.ContentRootPath, builder.Environment.IsDevelopment());
+var (fileStoragePublicRoot, _) = FileStorageRootResolver.ResolveCategoryRoots(
+    fileStorageEffectiveRoot, fileStorageOptionsAtStartup.PublicDirectory, fileStorageOptionsAtStartup.PrivateDirectory);
 builder.Services.AddSingleton<IFileStorageService, PhysicalFileStorageService>();
 
 // ===== Repositories =====
@@ -359,12 +360,14 @@ app.UseSerilogRequestLogging();
 // reachable this way — they're served exclusively through authenticated, ownership-checked API
 // endpoints (see CustomerController/RepPaymentController/QuickRequestController). Forcing service
 // resolution here also creates the storage directories up front.
-var fileStorageOptions = app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<DistributionSystem.Application.Configuration.FileStorageOptions>>().Value;
+var fileStorageOptions = app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<FileStorageOptions>>().Value;
 _ = app.Services.GetRequiredService<IFileStorageService>();
 
-var publicStorageRoot = string.IsNullOrWhiteSpace(fileStorageOptions.RootPath)
-    ? Path.Combine(app.Environment.ContentRootPath, ".local-storage", fileStorageOptions.PublicDirectory)
-    : Path.Combine(fileStorageOptions.RootPath, fileStorageOptions.PublicDirectory);
+// Reuses the exact same absolute path computed at startup (fileStoragePublicRoot, above) rather
+// than resolving RootPath/PublicDirectory again here — PhysicalFileProvider requires an absolute
+// path, and re-deriving it separately is exactly how a relative RootPath (e.g. "../private")
+// previously reached it un-resolved and crashed with "The path must be absolute".
+var publicStorageRoot = fileStoragePublicRoot;
 
 void ReflectCorsOrigin(Microsoft.AspNetCore.StaticFiles.StaticFileResponseContext ctx)
 {
