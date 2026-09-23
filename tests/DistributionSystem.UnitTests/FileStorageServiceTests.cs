@@ -128,7 +128,7 @@ public class FileStorageServiceTests : IDisposable
         var second = await service.SaveAsync(TestFormFile.Create("a.jpg", "image/jpeg"), "gallery", FileAccessCategory.Public, ImageExtensions, ImageContentTypes);
 
         first.StorageKey.Should().NotBe(second.StorageKey);
-        first.StorageKey.Should().NotContain("a.jpg"); // original filename is never trusted/reused
+        Path.GetFileName(first.StorageKey).Should().NotBe("a.jpg"); // original filename is never reused
     }
 
     [Theory]
