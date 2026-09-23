@@ -29,6 +29,8 @@ public interface IQuickRequestService
     // Admin
     Task<List<QuickRequestDto>> GetAllAsync(string? type = null, string? status = null, CancellationToken ct = default);
     Task<QuickRequestDto> GetByIdAsync(Guid requestId, CancellationToken ct = default);
+    Task<QuickRequestDto> CreateAdminAsync(Guid adminUserId,string createdBy,CreateQuickRequestDto dto,CancellationToken ct = default);
+    Task<QuickRequestDto> AddAdminImagesAsync(Guid requestId,IList<IFormFile> images,CancellationToken ct = default);
 
     /// <summary>Coordinator-scoped variant of <see cref="GetByIdAsync"/> — throws NotFoundException if the request's rep isn't assigned to this coordinator.</summary>
     Task<QuickRequestDto> GetForCoordinatorByIdAsync(Guid requestId, Guid coordinatorUserId, CancellationToken ct = default);

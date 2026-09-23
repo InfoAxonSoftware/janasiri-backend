@@ -168,24 +168,116 @@ public class QuickRequestService : IQuickRequestService
 
     // ── Admin ─────────────────────────────────────────────────────────────────
 
-    public async Task<List<QuickRequestDto>> GetAllAsync(
-        string? type = null, string? status = null, CancellationToken ct = default)
+    public async Task<QuickRequestDto> CreateAdminAsync(
+        Guid adminUserId,
+        string createdBy,
+        CreateQuickRequestDto dto,
+        CancellationToken ct = default)
     {
-        var query = _uow.Repository<QuickRequest>().Query()
+        if (!Enum.TryParse<QuickRequestType>(dto.Type, ignoreCase: true, out var type))
+            throw new BusinessException(
+                "Select Order or Quotation.",
+                "INVALID_QUICK_REQUEST_TYPE");
+
+        if (string.IsNullOrWhiteSpace(dto.CustomerName))
+            throw new BusinessException(
+                "Customer name is required.",
+                "QUICK_REQUEST_CUSTOMER_REQUIRED");
+
+        if (string.IsNullOrWhiteSpace(dto.Details))
+            throw new BusinessException(
+                "Add at least one item.",
+                "QUICK_REQUEST_DETAILS_REQUIRED");
+
+        var number = await GenerateUniqueNumberAsync(type, ct);
+
+        var request = new QuickRequest
+        {
+            RequestNumber = number,
+            Type = type,
+            CustomerName = dto.CustomerName.Trim(),
+            Details = dto.Details.Trim(),
+
+            // Admin-created quick orders are not owned by a Sales Rep.
+            RepId = null,
+
+            CreatedBy = string.IsNullOrWhiteSpace(createdBy)
+                ? adminUserId.ToString()
+                : createdBy.Trim(),
+        };
+
+        await _uow.Repository<QuickRequest>().AddAsync(request, ct);
+        await _uow.SaveChangesAsync(ct);
+
+        return MapToDto(request, string.Empty);
+    }
+
+    public async Task<QuickRequestDto> AddAdminImagesAsync(
+        Guid requestId,
+        IList<IFormFile> images,
+        CancellationToken ct = default)
+    {
+        var exists = await _uow.Repository<QuickRequest>().Query()
+            .AsNoTracking()
+            .AnyAsync(r =>
+                r.Id == requestId &&
+                r.Type == QuickRequestType.Order &&
+                !r.IsDeletedByAdmin &&
+                !r.IsPurgedByAdmin,
+                ct);
+
+        if (!exists)
+            throw new NotFoundException("Quick request", requestId);
+
+        var imageEntities = new List<QuickRequestImage>();
+
+        foreach (var image in images)
+        {
+            if (image.Length == 0)
+                continue;
+
+            ValidateImage(image);
+            imageEntities.Add(
+                await SaveImageAsync(requestId, image, ct));
+        }
+
+        if (imageEntities.Count > 0)
+        {
+            await _uow.Repository<QuickRequestImage>()
+                .AddRangeAsync(imageEntities, ct);
+
+            await _uow.SaveChangesAsync(ct);
+        }
+
+        var request = await _uow.Repository<QuickRequest>().Query()
+            .AsNoTracking()
             .Include(r => r.Images)
             .Include(r => r.Rep)
-            .Where(r => !r.IsDeletedByAdmin && !r.IsPurgedByAdmin)
-            .AsQueryable();
+            .FirstOrDefaultAsync(r => r.Id == requestId, ct);
 
-        if (!string.IsNullOrEmpty(type) && Enum.TryParse<QuickRequestType>(type, ignoreCase: true, out var t))
-            query = query.Where(r => r.Type == t);
+        if (request == null)
+            throw new NotFoundException("Quick request", requestId);
 
-        if (!string.IsNullOrEmpty(status) && Enum.TryParse<QuickRequestStatus>(status, ignoreCase: true, out var s))
-            query = query.Where(r => r.Status == s);
-
-        var list = await query.OrderByDescending(r => r.CreatedAt).ToListAsync(ct);
-        return list.Select(r => MapToDto(r, r.Rep?.FullName ?? string.Empty)).ToList();
+        return MapToDto(request, request.Rep?.FullName ?? string.Empty);
     }
+        public async Task<List<QuickRequestDto>> GetAllAsync(
+            string? type = null, string? status = null, CancellationToken ct = default)
+        {
+            var query = _uow.Repository<QuickRequest>().Query()
+                .Include(r => r.Images)
+                .Include(r => r.Rep)
+                .Where(r => !r.IsDeletedByAdmin && !r.IsPurgedByAdmin)
+                .AsQueryable();
+
+            if (!string.IsNullOrEmpty(type) && Enum.TryParse<QuickRequestType>(type, ignoreCase: true, out var t))
+                query = query.Where(r => r.Type == t);
+
+            if (!string.IsNullOrEmpty(status) && Enum.TryParse<QuickRequestStatus>(status, ignoreCase: true, out var s))
+                query = query.Where(r => r.Status == s);
+
+            var list = await query.OrderByDescending(r => r.CreatedAt).ToListAsync(ct);
+            return list.Select(r => MapToDto(r, r.Rep?.FullName ?? string.Empty)).ToList();
+        }
 
     public async Task<QuickRequestDto> GetByIdAsync(Guid requestId, CancellationToken ct = default)
     {
@@ -213,7 +305,11 @@ public class QuickRequestService : IQuickRequestService
         var request = await _uow.Repository<QuickRequest>().Query()
             .Include(r => r.Images)
             .Include(r => r.Rep)
-            .FirstOrDefaultAsync(r => r.Id == requestId && repIds.Contains(r.RepId), ct)
+            .FirstOrDefaultAsync(
+                r => r.Id == requestId
+                     && r.RepId.HasValue
+                     && repIds.Contains(r.RepId.Value),
+                ct)
             ?? throw new NotFoundException("Quick request", requestId);
 
         return MapToDto(request, request.Rep?.FullName ?? string.Empty);
@@ -357,7 +453,13 @@ public class QuickRequestService : IQuickRequestService
             .ToListAsync(ct);
 
         var request = await _uow.Repository<QuickRequest>().Query()
-            .FirstOrDefaultAsync(r => r.Id == requestId && repIds.Contains(r.RepId) && !r.IsDeletedByCoordinator && !r.IsPurgedByCoordinator, ct)
+            .FirstOrDefaultAsync(
+                r => r.Id == requestId
+                     && r.RepId.HasValue
+                     && repIds.Contains(r.RepId.Value)
+                     && !r.IsDeletedByCoordinator
+                     && !r.IsPurgedByCoordinator,
+                ct)
             ?? throw new NotFoundException("Quick request", requestId);
 
         request.IsDeletedByCoordinator = true;
@@ -379,7 +481,11 @@ public class QuickRequestService : IQuickRequestService
 
         var query = _uow.Repository<QuickRequest>().Query()
             .Include(r => r.Images).Include(r => r.Rep)
-            .Where(r => repIds.Contains(r.RepId) && !r.IsDeletedByCoordinator && !r.IsPurgedByCoordinator);
+            .Where(r =>
+                r.RepId.HasValue &&
+                repIds.Contains(r.RepId.Value) &&
+                !r.IsDeletedByCoordinator &&
+                !r.IsPurgedByCoordinator);
 
         if (!string.IsNullOrEmpty(type) && Enum.TryParse<QuickRequestType>(type, ignoreCase: true, out var t))
             query = query.Where(r => r.Type == t);
@@ -405,7 +511,11 @@ public class QuickRequestService : IQuickRequestService
 
         var request = await _uow.Repository<QuickRequest>().Query()
             .Include(r => r.Images).Include(r => r.Rep)
-            .FirstOrDefaultAsync(r => r.Id == requestId && repIds.Contains(r.RepId), ct)
+            .FirstOrDefaultAsync(
+                r => r.Id == requestId
+                     && r.RepId.HasValue
+                     && repIds.Contains(r.RepId.Value),
+                ct)
             ?? throw new NotFoundException("Quick request", requestId);
 
         if (!Enum.TryParse<QuickRequestStatus>(dto.Status, ignoreCase: true, out var newStatus))
@@ -432,7 +542,11 @@ public class QuickRequestService : IQuickRequestService
 
         var query = _uow.Repository<QuickRequest>().Query()
             .Include(r => r.Images).Include(r => r.Rep)
-            .Where(r => repIds.Contains(r.RepId) && r.IsDeletedByCoordinator && !r.IsPurgedByCoordinator);
+            .Where(r =>
+                r.RepId.HasValue &&
+                repIds.Contains(r.RepId.Value) &&
+                r.IsDeletedByCoordinator &&
+                !r.IsPurgedByCoordinator);
 
         if (!string.IsNullOrEmpty(type) && Enum.TryParse<QuickRequestType>(type, ignoreCase: true, out var t))
             query = query.Where(r => r.Type == t);
@@ -453,7 +567,13 @@ public class QuickRequestService : IQuickRequestService
             .ToListAsync(ct);
 
         var request = await _uow.Repository<QuickRequest>().Query()
-            .FirstOrDefaultAsync(r => r.Id == requestId && repIds.Contains(r.RepId) && r.IsDeletedByCoordinator && !r.IsPurgedByCoordinator, ct)
+            .FirstOrDefaultAsync(
+                r => r.Id == requestId
+                     && r.RepId.HasValue
+                     && repIds.Contains(r.RepId.Value)
+                     && r.IsDeletedByCoordinator
+                     && !r.IsPurgedByCoordinator,
+                ct)
             ?? throw new NotFoundException("Quick request", requestId);
 
         request.IsDeletedByCoordinator = false;
@@ -507,10 +627,15 @@ public class QuickRequestService : IQuickRequestService
         AdminNotes = r.AdminNotes,
         RepId = r.RepId,
         RepName = repName,
-        // Exposes the authenticated download endpoint (never a direct file URL) — attachments are private.
-        ImageUrls = r.Images.Select(i => $"/api/quick-requests/{r.Id}/images/{i.Id}").ToList(),
+        CreatedBy = r.CreatedBy,
+        ImageUrls = r.Images
+            .Select(i => $"/api/quick-requests/{r.Id}/images/{i.Id}")
+            .ToList(),
         CreatedAt = AsUtc(r.CreatedAt),
         UpdatedAt = AsUtc(r.UpdatedAt),
-        DeletedAt = AsUtc(r.AdminDeletedAt ?? r.CoordinatorDeletedAt ?? r.RepDeletedAt),
+        DeletedAt = AsUtc(
+            r.AdminDeletedAt ??
+            r.CoordinatorDeletedAt ??
+            r.RepDeletedAt),
     };
 }

@@ -13,8 +13,9 @@ public class QuickRequestDto
     public string Details { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public string? AdminNotes { get; set; }
-    public Guid RepId { get; set; }
+    public Guid? RepId { get; set; }
     public string RepName { get; set; } = string.Empty;
+    public string? CreatedBy { get; set; }
     public List<string> ImageUrls { get; set; } = [];
     public DateTime CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }

@@ -12,8 +12,8 @@ public class QuickRequest
     public QuickRequestStatus Status { get; set; } = QuickRequestStatus.Pending;
     public string? AdminNotes { get; set; }
 
-    public Guid RepId { get; set; }
-    public SalesRepProfile Rep { get; set; } = null!;
+    public Guid? RepId { get; set; }
+    public SalesRepProfile? Rep { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAt { get; set; }

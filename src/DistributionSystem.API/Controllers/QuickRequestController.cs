@@ -190,6 +190,51 @@ public class QuickRequestController : ControllerBase
         return Ok(ApiResponse<QuickRequestDto>.SuccessResponse(result));
     }
 
+    // ── Admin: Create ────────────────────────────────────────────────────────────
+
+    [HttpPost("admin/quick-requests")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    public async Task<IActionResult> AdminCreate(
+        [FromBody] CreateQuickRequestDto dto,
+        CancellationToken ct)
+    {
+        var result = await _service.CreateAdminAsync(
+            GetUserId(),
+            GetUsername(),
+            dto,
+            ct);
+
+        return Ok(
+            ApiResponse<QuickRequestDto>.SuccessResponse(
+                result,
+                "Quick order created."));
+    }
+
+    [HttpPost("admin/quick-requests/{id:guid}/images")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(50 * 1024 * 1024)]
+    public async Task<IActionResult> AdminUploadImages(
+        Guid id,
+        [FromForm] List<IFormFile> images,
+        CancellationToken ct)
+    {
+        if (images == null || images.Count == 0)
+            return BadRequest(
+                ApiResponse<string>.ErrorResponse(
+                    "No images provided."));
+
+        var result = await _service.AddAdminImagesAsync(
+            id,
+            images,
+            ct);
+
+        return Ok(
+            ApiResponse<QuickRequestDto>.SuccessResponse(
+                result,
+                "Images uploaded."));
+    }
+
     // ── Admin: List & detail ─────────────────────────────────────────────────
 
     [HttpGet("admin/quick-requests")]
