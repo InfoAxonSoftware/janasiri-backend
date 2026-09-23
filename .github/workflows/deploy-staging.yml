@@ -49,10 +49,26 @@ jobs:
           done
           echo "All required files present."
 
-      # No PostgreSQL connection, no EF migrations, and no production secrets are used anywhere
-      # in this job prior to deployment — build/test/publish never start the app, so
-      # FileStorage:RootPath / ConnectionStrings:DefaultConnection / JwtSettings:Secret (all
-      # required only at application startup on the server) are never needed here.
+      # Staging database migrations are applied before the FTP deployment.
+      # The Neon staging connection string is supplied only through a GitHub Actions secret.
+      - name: Install EF Core CLI
+        run: dotnet tool install --global dotnet-ef --version 10.0.3
+
+      - name: Apply pending EF Core migrations to staging Neon database
+        env:
+          ConnectionStrings__DefaultConnection: ${{ secrets.NEON_STAGING_CONNECTION_STRING }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ConnectionStrings__DefaultConnection:-}" ]; then
+            echo "::error::GitHub Actions secret NEON_STAGING_CONNECTION_STRING is not configured."
+            exit 1
+          fi
+
+          cd src/DistributionSystem.Infrastructure
+
+          dotnet ef database update             --startup-project ../DistributionSystem.API/DistributionSystem.API.csproj             --configuration Release
+
       - name: Verify publish output excludes dev/runtime/secret files
         run: |
           set -euo pipefail
