@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace DistributionSystem.Application.DTOs.Notification;
 
 public class NotificationDto
@@ -11,7 +13,7 @@ public class NotificationDto
     // Use DateTimeOffset so the serializer emits an explicit timezone and
     // the client can parse it correctly instead of assuming local.
     public DateTimeOffset CreatedAt { get; set; }
-    public string? Metadata { get; set; }
+    public JsonElement? Metadata { get; set; }
 }
 
 public class SendNotificationRequest
@@ -25,11 +27,21 @@ public class SendNotificationRequest
 
 public class BroadcastNotificationRequest
 {
-    public string Role { get; set; } = string.Empty;
+    public bool SendToAll { get; set; }
+    public string? Role { get; set; }
+    public List<Guid> UserIds { get; set; } = [];
     public string Title { get; set; } = string.Empty;
     public string Message { get; set; } = string.Empty;
     public string Type { get; set; } = "General";
     public string? Metadata { get; set; }
+}
+
+public class NotificationRecipientDto
+{
+    public Guid Id { get; set; }
+    public string Username { get; set; } = string.Empty;
+    public string Email { get; set; } = string.Empty;
+    public string Role { get; set; } = string.Empty;
 }
 
 public class NotificationPreferencesDto

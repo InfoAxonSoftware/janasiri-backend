@@ -2,10 +2,8 @@ using System.Security.Claims;
 using DistributionSystem.Application.DTOs.Common;
 using DistributionSystem.Application.DTOs.Notification;
 using DistributionSystem.Application.Services.Interfaces;
-using DistributionSystem.API.Hubs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.SignalR;
 
 namespace DistributionSystem.API.Controllers;
 
@@ -19,12 +17,9 @@ namespace DistributionSystem.API.Controllers;
 public class NotificationController : ControllerBase
 {
     private readonly INotificationService _notificationService;
-    private readonly IHubContext<NotificationHub> _hubContext;
-
-    public NotificationController(INotificationService notificationService, IHubContext<NotificationHub> hubContext)
+    public NotificationController(INotificationService notificationService)
     {
         _notificationService = notificationService;
-        _hubContext = hubContext;
     }
 
     private Guid GetUserId() => Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
@@ -52,7 +47,7 @@ public class NotificationController : ControllerBase
     [HttpPut("notifications/{id}/read")]
     public async Task<IActionResult> MarkAsRead(Guid id, CancellationToken ct)
     {
-        await _notificationService.MarkAsReadAsync(id, ct);
+        await _notificationService.MarkAsReadAsync(id, GetUserId(), ct);
         return Ok(ApiResponse<string>.SuccessResponse("Notification marked as read"));
     }
 
@@ -71,9 +66,16 @@ public class NotificationController : ControllerBase
     public async Task<IActionResult> SendNotification([FromBody] SendNotificationRequest request, CancellationToken ct)
     {
         var result = await _notificationService.SendToUserAsync(request, ct);
-        // Push via SignalR
-        await _hubContext.Clients.Group($"user_{request.UserId}").SendAsync("ReceiveNotification", result, ct);
         return Ok(ApiResponse<NotificationDto>.SuccessResponse(result, "Notification sent"));
+    }
+
+    /// <summary>Get active users available as notification recipients (Admin)</summary>
+    [HttpGet("admin/notifications/recipients")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    public async Task<IActionResult> GetNotificationRecipients(CancellationToken ct)
+    {
+        var recipients = await _notificationService.GetActiveRecipientsAsync(ct);
+        return Ok(ApiResponse<IReadOnlyList<NotificationRecipientDto>>.SuccessResponse(recipients));
     }
 
     /// <summary>Send notification to role (Admin)</summary>
@@ -81,10 +83,7 @@ public class NotificationController : ControllerBase
     [Authorize(Roles = "Admin,SuperAdmin")]
     public async Task<IActionResult> BroadcastNotification([FromBody] BroadcastNotificationRequest request, CancellationToken ct)
     {
-        await _notificationService.SendToRoleAsync(request, ct);
-        // Push via SignalR
-        await _hubContext.Clients.Group($"role_{request.Role}").SendAsync("ReceiveNotification",
-            new { request.Title, request.Message, request.Type }, ct);
+        await _notificationService.SendBroadcastAsync(request, ct);
         return Ok(ApiResponse<string>.SuccessResponse("Notification broadcast sent"));
     }
 }
