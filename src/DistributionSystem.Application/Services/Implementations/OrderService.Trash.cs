@@ -131,7 +131,7 @@ public partial class OrderService
         {
             Id = r.Id, Kind = QuickOrderKind, Number = r.RequestNumber,
             CustomerName = r.CustomerName, ShopName = r.CustomerName,
-            CustomerId = null, RepId = r.RepId, RepName = r.Rep.FullName,
+            CustomerId = null, RepId = r.RepId, RepName = r.Rep != null ? r.Rep.FullName : null,
             StatusValue = (int)r.Status, Date = r.CreatedAt, CreatedAt = r.CreatedAt,
             TotalAmount = null,
             DeletedAt = role == AdminTrashRole ? r.AdminDeletedAt : role == RepTrashRole ? r.RepDeletedAt : r.CoordinatorDeletedAt
@@ -172,9 +172,15 @@ public partial class OrderService
             .Include(o => o.Rep).ThenInclude(r => r!.User)
             .Include(o => o.OrderItems).Where(o => orderIds.Contains(o.Id))
             .ToDictionaryAsync(o => o.Id, ct);
+
+        // IMPORTANT: unified Orders must load the new generic attachment collection too.
         var quickEntities = await _unitOfWork.Repository<QuickRequest>().Query().AsNoTracking()
-            .Include(r => r.Rep).Include(r => r.Images).Where(r => quickIds.Contains(r.Id))
+            .Include(r => r.Rep)
+            .Include(r => r.Images)
+            .Include(r => r.Attachments)
+            .Where(r => quickIds.Contains(r.Id))
             .ToDictionaryAsync(r => r.Id, ct);
+
         var items = rows.Select(row => MapUnified(row, orderEntities, quickEntities)).ToList();
         return new PagedResult<UnifiedOrderDto>
         {
@@ -198,6 +204,7 @@ public partial class OrderService
                 TotalAmount = row.TotalAmount, DeletedAt = AsUtc(row.DeletedAt), Order = order
             };
         }
+
         var quick = MapQuickOrderToDto(quickOrders[row.Id]);
         return new UnifiedOrderDto
         {
@@ -209,16 +216,59 @@ public partial class OrderService
         };
     }
 
-    private static QuickRequestDto MapQuickOrderToDto(QuickRequest request) => new()
+    private static QuickRequestDto MapQuickOrderToDto(QuickRequest request)
     {
-        Id = request.Id, RequestNumber = request.RequestNumber,
-        Type = request.Type.ToString(), CustomerName = request.CustomerName,
-        Details = request.Details, Status = request.Status.ToString(),
-        AdminNotes = request.AdminNotes, RepId = request.RepId,
-        RepName = request.Rep?.FullName ?? string.Empty,
-        ImageUrls = request.Images.Select(i => i.ImageUrl).ToList(),
-        CreatedAt = AsUtc(request.CreatedAt), UpdatedAt = AsUtc(request.UpdatedAt)
-    };
+        var legacyImages = request.Images?
+            .Select(i => new QuickRequestAttachmentDto
+            {
+                Id = i.Id,
+                Url = $"/api/quick-requests/{request.Id}/images/{i.Id}",
+                OriginalFileName = $"Photo {i.Id:N}.jpg",
+                ContentType = "image/*",
+                SizeBytes = 0,
+                UploadedAt = request.CreatedAt
+            })
+            .ToList() ?? [];
+
+        var newAttachments = request.Attachments?
+            .Select(a => new QuickRequestAttachmentDto
+            {
+                Id = a.Id,
+                Url = $"/api/quick-requests/{request.Id}/images/{a.Id}",
+                OriginalFileName = a.OriginalFileName,
+                ContentType = a.ContentType,
+                SizeBytes = a.SizeBytes,
+                UploadedAt = AsUtc(a.UploadedAt)
+            })
+            .ToList() ?? [];
+
+        var allAttachments = legacyImages.Concat(newAttachments).ToList();
+
+        return new QuickRequestDto
+        {
+            Id = request.Id,
+            RequestNumber = request.RequestNumber,
+            Type = request.Type.ToString(),
+            CustomerName = request.CustomerName,
+            Details = request.Details,
+            Status = request.Status.ToString(),
+            AdminNotes = request.AdminNotes,
+            RepId = request.RepId,
+            RepName = request.Rep?.FullName ?? string.Empty,
+            CreatedBy = request.CreatedBy,
+            ImageUrls = allAttachments
+                .Where(a => !string.Equals(a.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase))
+                .Select(a => a.Url)
+                .ToList(),
+            Attachments = allAttachments,
+            CreatedAt = AsUtc(request.CreatedAt),
+            UpdatedAt = AsUtc(request.UpdatedAt),
+            DeletedAt = AsUtc(
+                request.AdminDeletedAt ??
+                request.CoordinatorDeletedAt ??
+                request.RepDeletedAt)
+        };
+    }
 
     private sealed class UnifiedOrderIndexRow
     {
