@@ -35,4 +35,5 @@ public class QuickRequest
     public DateTime? CoordinatorPurgedAt { get; set; }
 
     public ICollection<QuickRequestImage> Images { get; set; } = [];
+    public ICollection<QuickRequestAttachment> Attachments { get; set; } = [];
 }

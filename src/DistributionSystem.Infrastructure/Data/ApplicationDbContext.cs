@@ -53,6 +53,7 @@ public class ApplicationDbContext : DbContext
     public DbSet<TargetSalesReportEntry> TargetSalesReportEntries => Set<TargetSalesReportEntry>();
     public DbSet<QuickRequest> QuickRequests => Set<QuickRequest>();
     public DbSet<QuickRequestImage> QuickRequestImages => Set<QuickRequestImage>();
+    public DbSet<QuickRequestAttachment> QuickRequestAttachments => Set<QuickRequestAttachment>();
     public DbSet<RepPayment> RepPayments => Set<RepPayment>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)

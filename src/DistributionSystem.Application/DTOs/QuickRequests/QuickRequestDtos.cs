@@ -4,6 +4,16 @@ namespace DistributionSystem.Application.DTOs.QuickRequests;
 
 // ── Response DTOs ─────────────────────────────────────────────────────────────
 
+public class QuickRequestAttachmentDto
+{
+    public Guid Id { get; set; }
+    public string Url { get; set; } = string.Empty;
+    public string OriginalFileName { get; set; } = string.Empty;
+    public string ContentType { get; set; } = string.Empty;
+    public long SizeBytes { get; set; }
+    public DateTime UploadedAt { get; set; }
+}
+
 public class QuickRequestDto
 {
     public Guid Id { get; set; }
@@ -16,7 +26,13 @@ public class QuickRequestDto
     public Guid? RepId { get; set; }
     public string RepName { get; set; } = string.Empty;
     public string? CreatedBy { get; set; }
+
+    // Existing image URLs kept for backward compatibility
     public List<string> ImageUrls { get; set; } = [];
+
+    // New generic attachments: images + PDFs
+    public List<QuickRequestAttachmentDto> Attachments { get; set; } = [];
+
     public DateTime CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
     public DateTime? DeletedAt { get; set; }
