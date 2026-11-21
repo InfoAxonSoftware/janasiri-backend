@@ -29,7 +29,10 @@ Scope: local backend/frontend feature branch feat/role-aware-trash-7day. No prod
 - Previous frontend production build passed. Frontend files were not altered during this API-audit pass.
 - Disposable local PostgreSQL 17 test: intentionally orphaned Coordinator record blocked migration. After fixing dummy data, three new migrations succeeded.
 - Local scratch postmigration review: 12 expected legacy personal markers; 0 missing, 0 lost permanent-hidden markers, 0 missing Admin deletion dates.
-- No actual production snapshot, Janasiri staging database, or configured local Janasiri production connection was found under the checked local project/configuration. Existing running PostgreSQL is for OneBiz and was left untouched. Therefore actual production historic deletion counts are still UNKNOWN.
+- No actual production snapshot, Janasiri staging database, or configured local Janasiri production connection was found under the checked local project/configuration. The existing OneBiz PostgreSQL database was left untouched. Therefore actual production historic deletion counts are still UNKNOWN.
+- The read-only preflight now reports **current per-record Coordinator recipient cardinality** (zero and multiple assignments) across Orders, QuickRequests, Quotations and RepPayments. Old shared Coordinator deletion flags cannot identify the actual historical actor; multiple recipients need manual review before migration.
+- A separate preflight summary counts **legacy personal Trash that would expire on the first hourly sweep**, permanently hidden legacy entries and missing deletion dates, grouped by record kind and role. It is a planning report, not a decision to run cleanup.
+- Portable synthetic SQLite logic tests (`python tests/sql/check_legacy_trash_preflight.py`) passed for 4 Coordinator mapping scenarios and personal retention cutoffs. This is not a PostgreSQL dialect check; the Docker engine was offline during this new test run.
 - This does NOT validate the actual production database.
 
 ## Deployment blockers / remaining reviews

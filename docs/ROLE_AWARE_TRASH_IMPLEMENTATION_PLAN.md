@@ -50,7 +50,7 @@ Feature branch in both repositories: feat/role-aware-trash-7day.
 - git diff --check is run before commits.
 - Coordinator-to-Coordinator, Rep-to-Customer, Customer-to-Rep isolation, direct-detail bypass, action bypass, duplicate Delete, manual purge, 7-day expiry, idempotent rerun and non-destructive retention have regression coverage.
 - A disposable local PostgreSQL 17 test recreated the old EF schema, seeded old Admin/Rep/Coordinator/Customer deletion combinations, confirmed fail-closed migration for an orphan Coordinator record, then passed all three additive migrations when the orphan was resolved. Postcheck: 12 expected personal markers, 0 missing, 0 lost permanent hides, 0 Admin deletion timestamps left NULL.
-- Two read-only deployment queries are included: PRODUCTION_TRASH_PREFLIGHT_READONLY.sql and PRODUCTION_TRASH_POSTMIGRATION_READONLY.sql.
+- Two read-only deployment queries are included: PRODUCTION_TRASH_PREFLIGHT_READONLY.sql and PRODUCTION_TRASH_POSTMIGRATION_READONLY.sql. Preflight now explicitly reports multi-Coordinator historic deletion mappings and immediately expiring old **personal** Trash (not just Admin Trash); a synthetic SQLite logic fixture is in tests/sql/.
 - API security findings, Rep ledger/payment authorization fixes, optimistic concurrency protection for personal AND global Admin Trash, and remaining production compatibility risks are documented in TRASH_SECURITY_AND_MIGRATION_AUDIT.md. POSTGRES_TRASH_CONCURRENCY_TEST_RUNBOOK.md gives the opt-in local PostgreSQL test procedure.
 
 ## Remaining before merge/deployment

@@ -125,6 +125,121 @@ SELECT 'Quotations: customer', COUNT(*) FROM "Quotations" q
 WHERE q."IsDeletedByCustomer"
   AND NOT EXISTS (SELECT 1 FROM "CustomerProfiles" c WHERE c."Id" = q."CustomerId");
 
+-- Personal Trash already older than seven days will leave each user's
+-- visible Trash on the first enabled cleanup sweep, but business/financial
+-- rows remain stored and permanently hidden from that user.
+-- Review these counts BEFORE enabling TRASH_CLEANUP_ENABLED.
+WITH legacy_personal AS (
+    SELECT 'Order'::text AS record_kind, 'SalesRep'::text AS role_name,
+           "RepDeletedAt" AS deleted_at, "IsPurgedByRep" AS already_purged
+    FROM "Orders" WHERE "IsDeletedByRep" OR "IsPurgedByRep"
+    UNION ALL
+    SELECT 'Order', 'Coordinator', "CoordinatorDeletedAt", "IsPurgedByCoordinator"
+    FROM "Orders" WHERE "IsDeletedByCoordinator" OR "IsPurgedByCoordinator"
+    UNION ALL
+    SELECT 'Order', 'Customer', "CustomerDeletedAt", false
+    FROM "Orders" WHERE "IsDeletedByCustomer"
+    UNION ALL
+    SELECT 'QuickRequest', 'SalesRep', "RepDeletedAt", "IsPurgedByRep"
+    FROM "QuickRequests" WHERE "IsDeletedByRep" OR "IsPurgedByRep"
+    UNION ALL
+    SELECT 'QuickRequest', 'Coordinator', "CoordinatorDeletedAt", "IsPurgedByCoordinator"
+    FROM "QuickRequests" WHERE "IsDeletedByCoordinator" OR "IsPurgedByCoordinator"
+    UNION ALL
+    SELECT 'Quotation', 'SalesRep', "RepDeletedAt", false
+    FROM "Quotations" WHERE "IsDeletedByRep"
+    UNION ALL
+    SELECT 'Quotation', 'Coordinator', "CoordinatorDeletedAt", false
+    FROM "Quotations" WHERE "IsDeletedByCoordinator"
+    UNION ALL
+    SELECT 'Quotation', 'Customer', "CustomerDeletedAt", false
+    FROM "Quotations" WHERE "IsDeletedByCustomer"
+    UNION ALL
+    SELECT 'RepPayment', 'SalesRep', "SalesRepDeletedAt", false
+    FROM "RepPayments" WHERE "IsDeletedBySalesRep"
+    UNION ALL
+    SELECT 'RepPayment', 'Coordinator', "CoordinatorDeletedAt", false
+    FROM "RepPayments" WHERE "IsDeletedByCoordinator"
+)
+SELECT record_kind, role_name,
+       COUNT(*) AS legacy_personal_hidden,
+       COUNT(*) FILTER (WHERE already_purged) AS already_permanent,
+       COUNT(*) FILTER (WHERE NOT already_purged AND deleted_at IS NULL) AS unknown_deletion_date_fresh_window,
+       COUNT(*) FILTER (WHERE NOT already_purged AND deleted_at < NOW() - INTERVAL '7 days') AS would_expire_on_first_sweep
+FROM legacy_personal
+GROUP BY record_kind, role_name ORDER BY record_kind, role_name;
+
+-- Legacy role-wide Coordinator deletes do not identify the actor.
+-- Count the CURRENT Coordinator recipients each affected record would receive.
+-- A value >1 is not automatically an error: it demands human review because
+-- multiple private Trash markers will replace one historic shared flag.
+WITH legacy AS (
+    SELECT 'Order'::text AS kind, o."Id" AS record_id
+    FROM "Orders" o
+    WHERE o."IsDeletedByCoordinator" OR o."IsPurgedByCoordinator"
+    UNION ALL
+    SELECT 'QuickRequest', q."Id"
+    FROM "QuickRequests" q
+    WHERE q."IsDeletedByCoordinator" OR q."IsPurgedByCoordinator"
+    UNION ALL
+    SELECT 'Quotation', q."Id"
+    FROM "Quotations" q
+    WHERE q."IsDeletedByCoordinator"
+    UNION ALL
+    SELECT 'RepPayment', p."Id"
+    FROM "RepPayments" p
+    WHERE p."IsDeletedByCoordinator"
+),
+current_recipients AS (
+    SELECT 'Order'::text AS kind, o."Id" AS record_id, c."UserId" AS user_id
+    FROM "Orders" o
+    JOIN "CustomerProfiles" cp ON cp."Id" = o."CustomerId"
+    JOIN "CoordinatorProfiles" c ON c."Id" = cp."AssignedCoordinatorId"
+    WHERE o."IsDeletedByCoordinator" OR o."IsPurgedByCoordinator"
+    UNION ALL
+    SELECT 'Order', o."Id", c."UserId"
+    FROM "Orders" o
+    JOIN "RepCoordinators" rc ON rc."RepId" = o."RepId"
+    JOIN "CoordinatorProfiles" c ON c."Id" = rc."CoordinatorId"
+    WHERE o."IsDeletedByCoordinator" OR o."IsPurgedByCoordinator"
+    UNION ALL
+    SELECT 'QuickRequest', q."Id", c."UserId"
+    FROM "QuickRequests" q
+    JOIN "RepCoordinators" rc ON rc."RepId" = q."RepId"
+    JOIN "CoordinatorProfiles" c ON c."Id" = rc."CoordinatorId"
+    WHERE q."IsDeletedByCoordinator" OR q."IsPurgedByCoordinator"
+    UNION ALL
+    SELECT 'Quotation', q."Id", c."UserId"
+    FROM "Quotations" q
+    JOIN "CoordinatorProfiles" c ON c."Id" = q."CoordinatorId"
+    WHERE q."IsDeletedByCoordinator"
+    UNION ALL
+    SELECT 'Quotation', q."Id", c."UserId"
+    FROM "Quotations" q
+    JOIN "RepCoordinators" rc ON rc."RepId" = q."RepId"
+    JOIN "CoordinatorProfiles" c ON c."Id" = rc."CoordinatorId"
+    WHERE q."IsDeletedByCoordinator"
+    UNION ALL
+    SELECT 'RepPayment', p."Id", c."UserId"
+    FROM "RepPayments" p
+    JOIN "RepCoordinators" rc ON rc."RepId" = p."RepId"
+    JOIN "CoordinatorProfiles" c ON c."Id" = rc."CoordinatorId"
+    WHERE p."IsDeletedByCoordinator"
+),
+recipient_counts AS (
+    SELECT kind, record_id, COUNT(DISTINCT user_id) AS recipient_count
+    FROM current_recipients GROUP BY kind, record_id
+)
+SELECT l.kind AS record_kind,
+       COUNT(*) AS legacy_coordinator_deleted,
+       COUNT(*) FILTER (WHERE COALESCE(r.recipient_count,0)=0) AS no_current_recipient_blockers,
+       COUNT(*) FILTER (WHERE COALESCE(r.recipient_count,0)>1) AS multiple_current_recipients_review,
+       COALESCE(SUM(r.recipient_count),0) AS private_markers_to_backfill,
+       COALESCE(MAX(r.recipient_count),0) AS max_recipients_on_one_record
+FROM legacy l
+LEFT JOIN recipient_counts r ON r.kind=l.kind AND r.record_id=l.record_id
+GROUP BY l.kind ORDER BY l.kind;
+
 ROLLBACK;
 
 -- GO/NO-GO:

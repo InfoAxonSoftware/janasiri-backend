@@ -60,6 +60,8 @@ Create synthetic:
 
 - [ ] Use **read-only** preflight query against sanitized production snapshot: `PRODUCTION_TRASH_PREFLIGHT_READONLY.sql`
 - [ ] 0 orphan ownership blockers; review original historical Admin-delete counts and missing timestamps
+- [ ] Review `multiple_current_recipients_review` and `no_current_recipient_blockers` from the new Coordinator preflight query, including reassignment and multiple Coordinators on one Rep
+- [ ] Review `would_expire_on_first_sweep` for **both Admin and personal** Trash, plus legacy purge-only states and unknown deletion dates, before enabling the hourly cleanup
 - [ ] Snapshot-backed staging migration completed successfully
 - [ ] Postmigration query: 0 missing markers / 0 lost permanent markers / 0 missing Admin DeletedAt
 - [ ] Explicit reconciliation for historic Coordinator assignments and users reassigned after deletion
