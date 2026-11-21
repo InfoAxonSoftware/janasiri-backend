@@ -51,8 +51,18 @@ public partial class OrderService
         }
         else if (role == RepTrashRole)
         {
-            orders = orders.Where(o => !o.IsDeleted && !o.IsPurgedByAdmin && o.RepId == repId && (trash ? o.IsDeletedByRep && !o.IsPurgedByRep : !o.IsDeletedByRep && !o.IsPurgedByRep));
-            quickOrders = quickOrders.Where(r => !r.IsDeletedByAdmin && !r.IsPurgedByAdmin && r.RepId == repId && (trash ? r.IsDeletedByRep && !r.IsPurgedByRep : !r.IsDeletedByRep && !r.IsPurgedByRep));
+            orders = orders.Where(o => !o.IsDeleted && !o.IsPurgedByAdmin && o.RepId == repId &&
+                (trash
+                    ? personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.OrderKind &&
+                        t.RecordId == o.Id && t.PurgedAt == null)
+                    : !personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.OrderKind &&
+                        t.RecordId == o.Id)));
+            quickOrders = quickOrders.Where(r => !r.IsDeletedByAdmin && !r.IsPurgedByAdmin && r.RepId == repId &&
+                (trash
+                    ? personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.QuickRequestKind &&
+                        t.RecordId == r.Id && t.PurgedAt == null)
+                    : !personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.QuickRequestKind &&
+                        t.RecordId == r.Id)));
         }
         else
         {
@@ -65,7 +75,7 @@ public partial class OrderService
                     : !personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.OrderKind &&
                         t.RecordId == o.Id)));
             quickOrders = quickOrders.Where(r => !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
-                r.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId) &&
+                r.Rep != null && r.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId) &&
                 (trash
                     ? personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.QuickRequestKind &&
                         t.RecordId == r.Id && t.PurgedAt == null)
@@ -138,7 +148,7 @@ public partial class OrderService
             RepName = o.Rep != null ? o.Rep.FullName : null,
             StatusValue = (int)o.Status, Date = o.OrderDate, CreatedAt = o.CreatedAt,
             TotalAmount = o.TotalAmount,
-            DeletedAt = role == AdminTrashRole ? o.DeletedAt : role == RepTrashRole ? o.RepDeletedAt :
+            DeletedAt = role == AdminTrashRole ? o.DeletedAt :
                 personalTrash.Where(t => t.UserId == viewerId && t.RecordKind == PersonalRecordTrash.OrderKind &&
                     t.RecordId == o.Id).Select(t => (DateTime?)t.DeletedAt).FirstOrDefault()
         });
@@ -149,7 +159,7 @@ public partial class OrderService
             CustomerId = null, RepId = r.RepId, RepName = r.Rep != null ? r.Rep.FullName : null,
             StatusValue = (int)r.Status, Date = r.CreatedAt, CreatedAt = r.CreatedAt,
             TotalAmount = null,
-            DeletedAt = role == AdminTrashRole ? r.AdminDeletedAt : role == RepTrashRole ? r.RepDeletedAt :
+            DeletedAt = role == AdminTrashRole ? r.AdminDeletedAt :
                 personalTrash.Where(t => t.UserId == viewerId && t.RecordKind == PersonalRecordTrash.QuickRequestKind &&
                     t.RecordId == r.Id).Select(t => (DateTime?)t.DeletedAt).FirstOrDefault()
         });
@@ -211,7 +221,7 @@ public partial class OrderService
     {
         if (row.Kind == OrderKind)
         {
-            var order = MapToDto(orders[row.Id]);
+            var order = MapToDto(orders[row.Id], row.DeletedAt);
             return new UnifiedOrderDto
             {
                 Id = row.Id, Kind = row.Kind, Number = row.Number,
@@ -222,7 +232,7 @@ public partial class OrderService
             };
         }
 
-        var quick = MapQuickOrderToDto(quickOrders[row.Id]);
+        var quick = MapQuickOrderToDto(quickOrders[row.Id], row.DeletedAt);
         return new UnifiedOrderDto
         {
             Id = row.Id, Kind = row.Kind, Number = row.Number,
@@ -233,7 +243,7 @@ public partial class OrderService
         };
     }
 
-    private static QuickRequestDto MapQuickOrderToDto(QuickRequest request)
+    private static QuickRequestDto MapQuickOrderToDto(QuickRequest request, DateTime? deletedAt)
     {
         var legacyImages = request.Images?
             .Select(i => new QuickRequestAttachmentDto
@@ -280,10 +290,7 @@ public partial class OrderService
             Attachments = allAttachments,
             CreatedAt = AsUtc(request.CreatedAt),
             UpdatedAt = AsUtc(request.UpdatedAt),
-            DeletedAt = AsUtc(
-                request.AdminDeletedAt ??
-                request.CoordinatorDeletedAt ??
-                request.RepDeletedAt)
+            DeletedAt = AsUtc(deletedAt)
         };
     }
 

@@ -66,12 +66,48 @@ public partial class OrderService
             await MutateCoordinatorTrashAsync(coordinatorId!.Value, rawItems, restore, ct);
             return;
         }
+        if (role == RepTrashRole)
+        {
+            await MutateRepTrashAsync(repId!.Value, rawItems, restore, ct);
+            return;
+        }
 
         var now = DateTime.UtcNow;
         foreach (var item in ValidateTrashItems(rawItems))
         {
             if (item.Kind == OrderKind) await MutateOrderAsync(item.Id, role, repId, coordinatorId, restore, now, ct);
             else await MutateQuickOrderAsync(item.Id, role, repId, coordinatorId, restore, now, ct);
+        }
+        await _unitOfWork.SaveChangesAsync(ct);
+    }
+
+    private async Task MutateRepTrashAsync(
+        Guid repId, IReadOnlyCollection<OrderTrashItemRequest> rawItems,
+        bool restore, CancellationToken ct)
+    {
+        var repUserId = await _unitOfWork.Repository<SalesRepProfile>().Query()
+            .Where(r => r.Id == repId).Select(r => r.UserId).SingleAsync(ct);
+        var entries = _unitOfWork.Repository<UserRecordTrash>();
+        var actions = new List<UserRecordTrash>();
+        foreach (var item in ValidateTrashItems(rawItems))
+        {
+            var kind = item.Kind == OrderKind ? PersonalRecordTrash.OrderKind : PersonalRecordTrash.QuickRequestKind;
+            var allowed = item.Kind == OrderKind
+                ? await _unitOfWork.Repository<Order>().Query().AnyAsync(o => o.Id == item.Id &&
+                    o.RepId == repId && !o.IsDeleted && !o.IsPurgedByAdmin, ct)
+                : await _unitOfWork.Repository<QuickRequest>().Query().AnyAsync(r => r.Id == item.Id &&
+                    r.Type == QuickRequestType.Order && r.RepId == repId &&
+                    !r.IsDeletedByAdmin && !r.IsPurgedByAdmin, ct);
+            if (!allowed) throw new NotFoundException(item.Kind, item.Id);
+            var entry = await entries.Query().FirstOrDefaultAsync(x => x.UserId == repUserId &&
+                x.RecordKind == kind && x.RecordId == item.Id && x.PurgedAt == null, ct)
+                ?? throw new NotFoundException("Trash entry", item.Id);
+            actions.Add(entry);
+        }
+        foreach (var entry in actions)
+        {
+            if (restore) entries.Remove(entry);
+            else entry.PurgedAt = DateTime.UtcNow;
         }
         await _unitOfWork.SaveChangesAsync(ct);
     }
@@ -119,11 +155,6 @@ public partial class OrderService
     {
         var query = _unitOfWork.Repository<Order>().Query().Where(o => o.Id == id);
         if (role == AdminTrashRole) query = query.Where(o => o.IsDeleted && !o.IsPurgedByAdmin);
-        if (role == RepTrashRole) query = query.Where(o => o.RepId == repId && o.IsDeletedByRep && !o.IsPurgedByRep);
-        if (role == CoordinatorTrashRole)
-            query = query.Where(o => o.IsDeletedByCoordinator && !o.IsPurgedByCoordinator &&
-                (o.Customer.AssignedCoordinatorId == coordinatorId ||
-                 (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId))));
         var order = await query.FirstOrDefaultAsync(ct);
         if (order == null) throw new NotFoundException(nameof(Order), id);
         MutateOrderTrash(order, role, restore, now);
@@ -134,17 +165,7 @@ public partial class OrderService
         if (role == AdminTrashRole)
         {
             if (restore) { order.IsDeleted = false; order.DeletedAt = null; order.DeletedBy = null; }
-            else { order.IsPurgedByAdmin = true; order.AdminPurgedAt = now; }
-        }
-        if (role == RepTrashRole)
-        {
-            if (restore) { order.IsDeletedByRep = false; order.RepDeletedAt = null; }
-            else { order.IsPurgedByRep = true; order.RepPurgedAt = now; }
-        }
-        if (role == CoordinatorTrashRole)
-        {
-            if (restore) { order.IsDeletedByCoordinator = false; order.CoordinatorDeletedAt = null; }
-            else { order.IsPurgedByCoordinator = true; order.CoordinatorPurgedAt = now; }
+            else AdminRecordTrashPurge.MarkOrder(order, now);
         }
     }
 
@@ -154,10 +175,6 @@ public partial class OrderService
         var query = _unitOfWork.Repository<QuickRequest>().Query()
             .Where(r => r.Id == id && r.Type == QuickRequestType.Order);
         if (role == AdminTrashRole) query = query.Where(r => r.IsDeletedByAdmin && !r.IsPurgedByAdmin);
-        if (role == RepTrashRole) query = query.Where(r => r.RepId == repId && r.IsDeletedByRep && !r.IsPurgedByRep);
-        if (role == CoordinatorTrashRole)
-            query = query.Where(r => r.IsDeletedByCoordinator && !r.IsPurgedByCoordinator &&
-                r.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId));
         var request = await query.FirstOrDefaultAsync(ct);
         if (request == null) throw new NotFoundException(nameof(QuickRequest), id);
         MutateQuickTrash(request, role, restore, now);
@@ -168,22 +185,25 @@ public partial class OrderService
         if (role == AdminTrashRole)
         {
             if (restore) { request.IsDeletedByAdmin = false; request.AdminDeletedAt = null; }
-            else { request.IsPurgedByAdmin = true; request.AdminPurgedAt = now; }
-        }
-        if (role == RepTrashRole)
-        {
-            if (restore) { request.IsDeletedByRep = false; request.RepDeletedAt = null; }
-            else { request.IsPurgedByRep = true; request.RepPurgedAt = now; }
-        }
-        if (role == CoordinatorTrashRole)
-        {
-            if (restore) { request.IsDeletedByCoordinator = false; request.CoordinatorDeletedAt = null; }
-            else { request.IsPurgedByCoordinator = true; request.CoordinatorPurgedAt = now; }
+            else AdminRecordTrashPurge.MarkQuickRequest(request, now);
         }
     }
 
     private async Task EmptyTrashAsync(string role, Guid? repId, Guid? coordinatorId, CancellationToken ct)
     {
+        if (role == RepTrashRole)
+        {
+            var userId = await _unitOfWork.Repository<SalesRepProfile>().Query()
+                .Where(r => r.Id == repId).Select(r => r.UserId).SingleAsync(ct);
+            var entries = await _unitOfWork.Repository<UserRecordTrash>().Query()
+                .Where(x => x.UserId == userId && x.PurgedAt == null &&
+                    (x.RecordKind == PersonalRecordTrash.OrderKind ||
+                     x.RecordKind == PersonalRecordTrash.QuickRequestKind))
+                .ToListAsync(ct);
+            foreach (var entry in entries) entry.PurgedAt = DateTime.UtcNow;
+            await _unitOfWork.SaveChangesAsync(ct);
+            return;
+        }
         if (role == CoordinatorTrashRole)
         {
             var userId = await _unitOfWork.Repository<CoordinatorProfile>().Query()
@@ -203,19 +223,6 @@ public partial class OrderService
         {
             orders = orders.Where(o => o.IsDeleted && !o.IsPurgedByAdmin);
             quick = quick.Where(r => r.IsDeletedByAdmin && !r.IsPurgedByAdmin);
-        }
-        if (role == RepTrashRole)
-        {
-            orders = orders.Where(o => o.RepId == repId && o.IsDeletedByRep && !o.IsPurgedByRep);
-            quick = quick.Where(r => r.RepId == repId && r.IsDeletedByRep && !r.IsPurgedByRep);
-        }
-        if (role == CoordinatorTrashRole)
-        {
-            orders = orders.Where(o => o.IsDeletedByCoordinator && !o.IsPurgedByCoordinator &&
-                (o.Customer.AssignedCoordinatorId == coordinatorId ||
-                 (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId))));
-            quick = quick.Where(r => r.IsDeletedByCoordinator && !r.IsPurgedByCoordinator &&
-                r.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId));
         }
         var now = DateTime.UtcNow;
         foreach (var order in await orders.ToListAsync(ct)) MutateOrderTrash(order, role, false, now);

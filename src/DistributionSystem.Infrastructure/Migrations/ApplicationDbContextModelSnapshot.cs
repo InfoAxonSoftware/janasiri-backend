@@ -791,6 +791,7 @@ namespace DistributionSystem.Infrastructure.Migrations
                         .HasColumnType("numeric(18,2)");
 
                     b.Property<bool>("IsDeleted")
+                        .IsConcurrencyToken()
                         .HasColumnType("boolean");
 
                     b.Property<bool>("IsDeletedByCoordinator")
@@ -803,6 +804,7 @@ namespace DistributionSystem.Infrastructure.Migrations
                         .HasColumnType("boolean");
 
                     b.Property<bool>("IsPurgedByAdmin")
+                        .IsConcurrencyToken()
                         .HasColumnType("boolean");
 
                     b.Property<bool>("IsPurgedByCoordinator")
@@ -1359,6 +1361,7 @@ namespace DistributionSystem.Infrastructure.Migrations
                         .HasColumnType("text");
 
                     b.Property<bool>("IsDeletedByAdmin")
+                        .IsConcurrencyToken()
                         .HasColumnType("boolean");
 
                     b.Property<bool>("IsDeletedByCoordinator")
@@ -1368,6 +1371,7 @@ namespace DistributionSystem.Infrastructure.Migrations
                         .HasColumnType("boolean");
 
                     b.Property<bool>("IsPurgedByAdmin")
+                        .IsConcurrencyToken()
                         .HasColumnType("boolean");
 
                     b.Property<bool>("IsPurgedByCoordinator")
@@ -1472,6 +1476,9 @@ namespace DistributionSystem.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<DateTime?>("AdminPurgedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<Guid?>("ConvertedOrderId")
                         .HasColumnType("uuid");
 
@@ -1503,6 +1510,7 @@ namespace DistributionSystem.Infrastructure.Migrations
                         .HasColumnType("numeric");
 
                     b.Property<bool>("IsDeleted")
+                        .IsConcurrencyToken()
                         .HasColumnType("boolean");
 
                     b.Property<bool>("IsDeletedByCoordinator")
@@ -1512,6 +1520,10 @@ namespace DistributionSystem.Infrastructure.Migrations
                         .HasColumnType("boolean");
 
                     b.Property<bool>("IsDeletedByRep")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsPurgedByAdmin")
+                        .IsConcurrencyToken()
                         .HasColumnType("boolean");
 
                     b.Property<string>("Notes")
@@ -1716,6 +1728,9 @@ namespace DistributionSystem.Infrastructure.Migrations
                         .HasMaxLength(1000)
                         .HasColumnType("character varying(1000)");
 
+                    b.Property<DateTime?>("AdminPurgedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<decimal>("Amount")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
@@ -1740,12 +1755,17 @@ namespace DistributionSystem.Infrastructure.Migrations
                         .HasColumnType("character varying(500)");
 
                     b.Property<bool>("IsDeletedByAdmin")
+                        .IsConcurrencyToken()
                         .HasColumnType("boolean");
 
                     b.Property<bool>("IsDeletedByCoordinator")
                         .HasColumnType("boolean");
 
                     b.Property<bool>("IsDeletedBySalesRep")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsPurgedByAdmin")
+                        .IsConcurrencyToken()
                         .HasColumnType("boolean");
 
                     b.Property<string>("ReferenceNumber")
@@ -2599,6 +2619,7 @@ namespace DistributionSystem.Infrastructure.Migrations
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTime?>("PurgedAt")
+                        .IsConcurrencyToken()
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<Guid>("RecordId")

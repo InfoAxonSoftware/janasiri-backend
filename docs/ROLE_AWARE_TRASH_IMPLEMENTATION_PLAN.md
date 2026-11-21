@@ -1,56 +1,74 @@
-# Janasiri — Role-aware trash and 7-day lifecycle plan
+# Janasiri — Role-aware Trash and 7-day lifecycle
 
-Feature branch (both repositories): `feat/role-aware-trash-7day`. Base: `main`. No changes to local development configuration or unrelated backups.
+Feature branch in both repositories: feat/role-aware-trash-7day.
 
-## Required behavior
-1. Admin/SuperAdmin soft-delete is **global** across active lists, direct detail APIs, downloads, exports, and action endpoints. Admin restore removes only global hide; previous personal hides are preserved.
-2. Rep, Coordinator, Customer deletion is **per user** (not per role): no changes to other users' active records. Access to a record and ownership/assignment must be validated server-side.
-3. Admin Trash and personal Trash support individual and bulk restore; purge is two-stage (visibility and data retention).
-4. A 7-day deadline uses a UTC timestamp set at deletion, not a page-open event. A backend job processes expired trash, including Orders, Quotations, Quick Orders, Quick Quotations.
-5. Admin manual permanent delete and automatic expiry use the **same guarded purge service**. Quick request image/attachment files are deleted only after a successful safe purge, with retry/cleanup logs on storage failure.
-6. Financial audit guard: paid, dispatched, delivered, settled, invoiced or linked records must not be silently physically removed. Preserve them in protected retention/archive (hidden globally); only unlinked safe drafts can be physically deleted. Enforce FK constraints and audit logging.
-7. Personal permanent removal/expiry only permanently hides from that user and removes the item from their Trash. It never removes database business records.
-8. Maintenance must be idempotent, retry-safe, paginated/batched and safe for multiple application instances (leader/advisory lock or DB lock).
+## Architecture decisions
 
-## Implementation order and gates
+- Admin/SuperAdmin deletion is global. It hides the record from all normal role views.
+- Rep, Coordinator and Customer deletion is private to the authenticated user. A personal delete never changes the shared business record's deletion flags.
+- UserRecordTrashes stores personal visibility by (UserId, RecordKind, RecordId), with UTC DeletedAt and nullable PurgedAt.
+- A personal purge or expiry sets PurgedAt. The record stays hidden from that user's active view and disappears from that user's Trash. It remains visible to other authorized roles.
+- Admin purge/expiry uses one guarded AdminRecordTrashPurge transition. It removes the record from Admin Trash but retains the business row, related data and attachments for audit/financial retention.
+- Physical hard-delete entry points for Orders and Quick Requests are disabled. No business record or attachment is physically deleted by this feature.
+- Admin and personal expiry are based on deletion timestamps, not on opening a Trash page. The background service processes batches of 200 and is idempotent.
 
-### Phase 1: Global visibility consistency
-- Make current admin delete flags authoritative in every role's active list, unified list, detail endpoint and attachment authorization.
-- Update misleading 30-day frontend copy to 7 days.
-- Add regression tests (admin delete, restore, quick requests; no bypass via ID).
-- Gate: backend builds and tests; frontend build.
+## Implemented
 
-### Phase 2: Per-user visibility migration
-- Introduce an indexed `UserRecordTrash` table keyed by (`UserId`, `Kind`, `RecordId`) with `DeletedAt` and `PurgedAt`.
-- Migrate legacy Rep/Coordinator/Customer flags to per-user entries, including coordinator membership; never lose existing delete states.
-- Switch the four record types' lists/details/trash/restore/individual/bulk actions to one user-scoped service; enforce ownership.
-- Gate: user A deletion cannot hide user B's record; backward-compatible migration tests.
+### Backend
 
-### Phase 3: Permanent purge and scheduling
-- Centralize global purge for four record kinds. Implement protected financial retention/archiving and relational/attachment safeguards.
-- Replace on-read quotation purge and personal flag-reset behavior with background job. Process 7-day expiration across all record kinds, log failures and retry.
-- Gate: manual + automatic purge tests with paid/unpaid orders, converted quotations, attachments, linked records and reruns.
+- Global Admin deletion is enforced in Rep, Coordinator and Customer order/quick-request active lists and direct details.
+- Coordinator, Rep and Customer personal Trash now use UserRecordTrashes for Orders, Quick Orders, Quotations and Quick Quotations.
+- Standard list/detail/action routes check user ownership/assignment and current Trash visibility. Customer cancellation, rating and reorder are scoped to the authenticated Customer.
+- Coordinator order/quotation/quick-request status actions reject records hidden in that Coordinator's personal Trash.
+- Individual and bulk personal restore/purge are supported for Orders and Quick Orders; individual restore/purge is supported for Quotations and Quick Quotations.
+- Customer Orders and Quotations have personal Trash restore/purge endpoints.
+- Admin manual purge is supported for Orders/Quick Orders, Quotations, Quick Quotations and Payment Reports. It only removes items from Admin Trash while retaining business/financial rows and evidence.
+- AdminRecordTrashPurge is shared by manual Admin purge and scheduled Admin expiry for Orders, Quick Requests, Quotations and RepPayments.
+- TrashCleanupService expires personal business-record Trash and Admin Trash after seven days with an hourly UTC sweep (within one hour of expiry). Existing Rep/Coordinator profile Trash retains its separate 30-day policy. The job does not physically delete business or financial records.
+- Legacy Rep, Coordinator and Customer deletion flags are backfilled into UserRecordTrashes by the additive EF migration. Purged-only legacy Coordinator records are included. The SQL blocks rollout if a legacy deletion has no resolvable current Rep/Coordinator/Customer owner.
+- Old globally Admin-deleted rows with NULL DeletedAt receive NOW() (new seven-day window); valid legacy timestamps remain unchanged. Duplicate Delete requests never reset an existing or purged user's Trash marker.
+- Old role-delete fields remain for reference, but rollback AFTER new personal deletions needs explicit reconciliation: dropping UserRecordTrashes would re-expose those new private deletions.
+- Quotation and RepPayment have IsPurgedByAdmin and AdminPurgedAt fields so expired Admin Trash does not reappear. Legacy RepPayment deletion states are backfilled into per-user Trash.
+- Trash DTOs return the actual personal DeletedAt, so 7-day countdowns and ordering use the new table timestamps.
 
-### Phase 4: Frontend UX
-- Admin: global delete label + confirmation; Trash restore, manual permanent delete and 7-day countdown for all four kinds.
-- Rep/Coordinator/Customer: "Remove from My View" and own Trash restore/permanent-hide; no controls that imply they can erase the database.
-- Unified order/quick-order trash, quotation/quick-quotation trash; fix selection, bulk operations, empty-trash, errors, cache invalidation.
-- Gate: desktop/mobile role-by-role UAT.
+### Frontend
 
-### Phase 5: Deployment verification
-- Review generated EF Core migration before applying; migrate staging, test with sanitized records. Backup and dry-run purge review.
-- Run CI and staging; verify background runner operation with telemetry. Require approval before production migration and merge.
-- Update tests/docs and open separate backend/frontend pull requests. Never auto-merge or deploy production.
+- Admin Quotations Trash includes standard and Quick Quotations, Restore and “Remove from Admin Trash”.
+- Rep and Coordinator Quotation Trash supports Restore and personal “Remove”.
+- Customer Quotations has a personal Trash tab, Move to Trash, Restore and Remove.
+- Customer Orders Trash supports Restore and Remove.
+- Unified Orders/Quick Orders Trash has role-aware Admin vs personal wording and confirmation.
+- Retention copy now explains that records remain stored for audit.
+- Rep and Coordinator Payment Reports include a personal Remove from Trash action, and Admin Payment Reports uses non-destructive Remove from Admin Trash wording. Evidence remains available to its authorized owner within personal Trash, but not after personal purge.
 
-## Existing issues confirmed from source
-- Existing global Admin delete for Orders/QuickRequests was *not* enforced in Rep/Coordinator/Customer lists.
-- Existing ordinary Quotations list already respected global Admin soft-delete.
-- Existing legacy `IsDeletedByCoordinator` is a shared boolean and cannot isolate two coordinators.
-- Existing quotation Trash screens said 30 days, while code used 7.
-- Existing quotation admin Trash read physically purged old quotations; other role Trash reads **reset** expired flags, resurfacing the items.
-- Existing Order/QuickRequest role "permanent" action only sets purge flags; it does not physically remove database rows.
+## Validation completed
 
-## Rollout / safeguards
-- No production database access is assumed. Do **not** run schema updates without staging approval.
-- Local `appsettings.Development.json` and existing unrelated frontend untracked directories must remain untouched and uncommitted.
-- Existing `frontend` PR #2 (`fix/frontend-ci-critical-audit`) remains independent until merged; rebase feature work on current `main` at review.
+- Backend API project builds successfully.
+- Backend unit tests: **187 passed, 0 failed**, including Admin operational dashboard vs historical financial-report separation and 3 migration rollback-guard regression tests. Isolated PostgreSQL 17 integration run: **6 passed, 0 failed** (4 real PostgreSQL Trash concurrency/expiry checks, HTTP 409 response check, 1 pre-existing placeholder test).
+- Frontend production build (tsc -b and vite build) succeeds.
+- dotnet ef migrations has-pending-model-changes reports no model changes pending.
+- git diff --check is run before commits.
+- Coordinator-to-Coordinator, Rep-to-Customer, Customer-to-Rep isolation, direct-detail bypass, action bypass, duplicate Delete, manual purge, 7-day expiry, idempotent rerun and non-destructive retention have regression coverage.
+- A disposable local PostgreSQL 17 test recreated the old EF schema, seeded old Admin/Rep/Coordinator/Customer deletion combinations, confirmed fail-closed migration for an orphan Coordinator record, then passed all three additive migrations when the orphan was resolved. Postcheck: 12 expected personal markers, 0 missing, 0 lost permanent hides, 0 Admin deletion timestamps left NULL.
+- Two read-only deployment queries are included: PRODUCTION_TRASH_PREFLIGHT_READONLY.sql and PRODUCTION_TRASH_POSTMIGRATION_READONLY.sql.
+- API security findings, Rep ledger/payment authorization fixes, optimistic concurrency protection for personal AND global Admin Trash, and remaining production compatibility risks are documented in TRASH_SECURITY_AND_MIGRATION_AUDIT.md. POSTGRES_TRASH_CONCURRENCY_TEST_RUNBOOK.md gives the opt-in local PostgreSQL test procedure.
+
+## Remaining before merge/deployment
+
+1. Run PRODUCTION_TRASH_PREFLIGHT_READONLY.sql with a read-only account against a production snapshot. Record historical counts, unmappable rows and records older than seven days. A disposable scratch fixture was tested, but real production data has NOT been inspected.
+2. Main QuickRequest image/PDF, Payment evidence, Quotation details and status/upload bypasses were audited and fixed. Rep ledger/payment endpoints now check assignment and cross-customer linkage. Admin dashboard active/pending Order KPIs now exclude globally deleted Orders without changing historical financial totals. Complete client-generated CSV/Excel/PDF reports, customer documents, remaining KPI semantics and full region-report UAT; see TRASH_SECURITY_AND_MIGRATION_AUDIT.md.
+3. Run the migration on a production-like restored staging database, verify postmigration SQL counts, restore/purge behavior and linked financial/evidence records. Review old records that will expire during the first cleanup sweep; get explicit approval before enabling the job.
+4. Real PostgreSQL stale-write and expiry tests passed. Verify the background service under a multi-process staging topology with logs/metrics, retry semantics and load tests. Stale writes are rejected, but no explicit distributed leader lock has been added.
+5. Complete desktop/mobile role-by-role UAT for Admin, Rep, Coordinator and Customer. The detailed execution matrix and release criteria are in ROLE_TRASH_STAGING_UAT_CHECKLIST.md (not yet executed on staging).
+6. Run repository CI, open separate backend/frontend PRs, review the diffs and request approval. Do not auto-merge or deploy production.
+
+## Deployment safeguards
+
+- Production API startup and Docker Compose default to NO automatic EF migrations. Set DB_AUTOMIGRATE explicitly only under a controlled migration plan. The hourly TrashCleanup job is also disabled by default in production; enable TRASH_CLEANUP_ENABLED only after preflight, staging validation and approval.
+- No production database migration has been run.
+- No production deployment has been performed.
+- main has not been modified.
+- Do not physically delete business rows or stored attachments under this feature. Any future physical retention/deletion policy must be a separate approved change with FK, financial, legal and audit review.
+- Keep local appsettings.Development.json changes and unrelated frontend backup folders out of commits.
+- Feature deployment needs a compatible database/schema first, and legacy writers must be paused while backfill and API rollout are coordinated. Back up the DB AND evidence storage. Downgrade migration does not reconstruct new user-deletion markers, and now fails closed for nonempty personal Trash or purged Quotations/RepPayments until reconciled.
+- Frontend PR #2 (fix/frontend-ci-critical-audit) remains separate; reconcile/rebase after it is merged before opening the final feature PR.

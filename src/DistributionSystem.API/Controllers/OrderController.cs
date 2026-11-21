@@ -322,11 +322,7 @@ public class OrderController : ControllerBase
     [Authorize(Roles = "SalesRep")]
     public async Task<IActionResult> RepGetOrders([FromQuery] OrderFilterRequest filter, CancellationToken ct)
     {
-        var userId = GetUserId();
-        var repProfile = await _unitOfWork.Repository<SalesRepProfile>().Query().FirstOrDefaultAsync(r => r.UserId == userId, ct);
-        filter.RepId = repProfile?.Id; // use SalesRepProfile.Id (nullable) — if not found, no results will be returned
-
-        var result = await _orderService.GetAllAsync(filter, ct);
+        var result = await _orderService.GetForRepAsync(GetUserId(), filter, ct);
         return Ok(ApiResponse<PagedResult<OrderDto>>.SuccessResponse(result));
     }
 
@@ -343,7 +339,7 @@ public class OrderController : ControllerBase
     [Authorize(Roles = "SalesRep")]
     public async Task<IActionResult> RepGetOrder(Guid id, CancellationToken ct)
     {
-        var result = await _orderService.GetByIdAsync(id, ct);
+        var result = await _orderService.RepGetByIdAsync(id, GetUserId(), ct);
         return Ok(ApiResponse<OrderDto>.SuccessResponse(result));
     }
 
@@ -377,7 +373,7 @@ public class OrderController : ControllerBase
         if (!canView)
             return Forbid();
 
-        var result = await _orderService.GetByIdAsync(id, ct);
+        var result = await _orderService.CoordinatorGetByIdAsync(id, userId, ct);
         return Ok(ApiResponse<OrderDto>.SuccessResponse(result));
     }
 
@@ -391,6 +387,7 @@ public class OrderController : ControllerBase
         var canApprove = await IsOrderVisibleToCoordinatorAsync(id, coordinatorId, ct);
         if (!canApprove)
             return Forbid();
+        await _orderService.CoordinatorGetByIdAsync(id, userId, ct);
 
         var result = await _orderService.ApproveAsync(id, userId, ct);
         await PublishOrderStatusChangedAsync(result, "Approved", null, ct);
@@ -419,6 +416,7 @@ public class OrderController : ControllerBase
         var canReject = await IsOrderVisibleToCoordinatorAsync(id, coordinatorId, ct);
         if (!canReject)
             return Forbid();
+        await _orderService.CoordinatorGetByIdAsync(id, userId, ct);
 
         var result = await _orderService.RejectAsync(id, reason ?? "", ct);
         await PublishOrderStatusChangedAsync(result, "Rejected", reason, ct);
@@ -435,6 +433,7 @@ public class OrderController : ControllerBase
         var canUpdate = await IsOrderVisibleToCoordinatorAsync(id, coordinatorId, ct);
         if (!canUpdate)
             return Forbid();
+        await _orderService.CoordinatorGetByIdAsync(id, userId, ct);
 
         var result = await _orderService.UpdateStatusAsync(id, request, ct);
         await PublishOrderStatusChangedAsync(result, request.Status.ToString(), request.Reason, ct);
@@ -446,6 +445,7 @@ public class OrderController : ControllerBase
     [Authorize(Roles = "SalesRep")]
     public async Task<IActionResult> RepCancelOrder(Guid id, [FromBody] string? reason, CancellationToken ct)
     {
+        await _orderService.RepGetByIdAsync(id, GetUserId(), ct);
         var result = await _orderService.CancelAsync(id, reason ?? "", ct);
         await PublishOrderStatusChangedAsync(result, "Cancelled", reason, ct);
         return Ok(ApiResponse<OrderDto>.SuccessResponse(result, "Order cancelled"));
@@ -524,10 +524,7 @@ public class OrderController : ControllerBase
     [Authorize(Roles = "Customer")]
     public async Task<IActionResult> CustomerGetOrders([FromQuery] OrderFilterRequest filter, CancellationToken ct)
     {
-        var userId = GetUserId();
-        var customer = await _customerService.GetByUserIdAsync(userId, ct);
-        filter.CustomerId = customer.Id;
-        var result = await _orderService.GetAllAsync(filter, ct);
+        var result = await _orderService.GetForCustomerAsync(GetUserId(), filter, ct);
         return Ok(ApiResponse<PagedResult<OrderDto>>.SuccessResponse(result));
     }
 
@@ -536,7 +533,7 @@ public class OrderController : ControllerBase
     [Authorize(Roles = "Customer")]
     public async Task<IActionResult> CustomerGetOrder(Guid id, CancellationToken ct)
     {
-        var result = await _orderService.GetByIdAsync(id, ct);
+        var result = await _orderService.CustomerGetByIdAsync(id, GetUserId(), ct);
         return Ok(ApiResponse<OrderDto>.SuccessResponse(result));
     }
 
@@ -545,7 +542,7 @@ public class OrderController : ControllerBase
     [Authorize(Roles = "Customer")]
     public async Task<IActionResult> TrackOrder(Guid id, CancellationToken ct)
     {
-        var result = await _orderService.GetByIdAsync(id, ct);
+        var result = await _orderService.CustomerGetByIdAsync(id, GetUserId(), ct);
         return Ok(ApiResponse<object>.SuccessResponse(new
         {
             result.Id,
@@ -563,7 +560,7 @@ public class OrderController : ControllerBase
     [Authorize(Roles = "Customer")]
     public async Task<IActionResult> CustomerCancelOrder(Guid id, [FromBody] string? reason, CancellationToken ct)
     {
-        var result = await _orderService.CancelAsync(id, reason ?? "", ct);
+        var result = await _orderService.CustomerCancelAsync(id, GetUserId(), reason ?? "", ct);
         await PublishOrderStatusChangedAsync(result, "Cancelled", reason, ct);
         return Ok(ApiResponse<OrderDto>.SuccessResponse(result, "Order cancelled"));
     }
@@ -573,7 +570,7 @@ public class OrderController : ControllerBase
     [Authorize(Roles = "Customer")]
     public async Task<IActionResult> RateOrder(Guid id, [FromBody] RateOrderRequest request, CancellationToken ct)
     {
-        await _orderService.RateOrderAsync(id, request, ct);
+        await _orderService.CustomerRateOrderAsync(id, GetUserId(), request, ct);
         return Ok(ApiResponse<string>.SuccessResponse("Order rated"));
     }
 
@@ -720,6 +717,14 @@ public class OrderController : ControllerBase
     {
         await _orderService.CustomerRestoreAsync(id, GetUserId(), ct);
         return Ok(ApiResponse<string>.SuccessResponse("Order restored"));
+    }
+
+    [HttpPost("customer/orders/{id}/permanent")]
+    [Authorize(Roles = "Customer")]
+    public async Task<IActionResult> CustomerPurgeOrder(Guid id, CancellationToken ct)
+    {
+        await _orderService.CustomerPurgeAsync(id, GetUserId(), ct);
+        return Ok(ApiResponse<string>.SuccessResponse("Removed from your Trash; record retained."));
     }
 }
 

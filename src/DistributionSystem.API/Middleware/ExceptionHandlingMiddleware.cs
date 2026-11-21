@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using DistributionSystem.Application.DTOs.Common;
 using DistributionSystem.Application.Exceptions;
+using Microsoft.EntityFrameworkCore;
 
 namespace DistributionSystem.API.Middleware;
 
@@ -40,6 +41,7 @@ public class ExceptionHandlingMiddleware
             BusinessException ex => (HttpStatusCode.BadRequest, ex.Message, (IEnumerable<string>?)null),
             AppValidationException ex => (HttpStatusCode.UnprocessableEntity, ex.Message, ex.Errors.SelectMany(e => e.Value)),
             UnauthorizedAccessException => (HttpStatusCode.Unauthorized, "Unauthorized access", (IEnumerable<string>?)null),
+            DbUpdateConcurrencyException => (HttpStatusCode.Conflict, "This record was changed by another request. Refresh and try again.", (IEnumerable<string>?)null),
             _ => (HttpStatusCode.InternalServerError, "An internal server error occurred", (IEnumerable<string>?)null)
         };
 

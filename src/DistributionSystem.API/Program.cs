@@ -82,8 +82,9 @@ builder.Services.AddScoped<ISupportChatPublisher, SupportChatPublisher>();
 
 // background job for generating visits from routes
 builder.Services.AddHostedService<DistributionSystem.Application.Services.Background.DailyVisitGenerator>();
-// background job for purging soft-deleted records (30-day trash cleanup)
-builder.Services.AddHostedService<DistributionSystem.Application.Services.Background.TrashCleanupService>();
+// Hourly record expiry requires explicit enablement in production, after migration validation.
+if (builder.Configuration.GetValue("TrashCleanup:Enabled", builder.Environment.IsDevelopment()))
+    builder.Services.AddHostedService<DistributionSystem.Application.Services.Background.TrashCleanupService>();
 builder.Services.AddScoped<IPaymentService, PaymentService>();
 builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<ICoordinatorService, CoordinatorService>();

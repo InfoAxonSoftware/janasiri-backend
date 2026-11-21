@@ -31,19 +31,23 @@ public interface IQuotationService
     Task AdminSoftDeleteAsync(Guid quotationId, string deletedBy, CancellationToken ct);
     Task<PagedResult<QuotationDto>> AdminGetTrashAsync(int page, int pageSize, CancellationToken ct);
     Task AdminRestoreAsync(Guid quotationId, CancellationToken ct);
+    Task AdminPurgeAsync(Guid quotationId, CancellationToken ct);
 
     // Rep trash
     Task RepSoftDeleteAsync(Guid quotationId, Guid repUserId, CancellationToken ct);
     Task<PagedResult<QuotationDto>> RepGetTrashAsync(Guid repUserId, int page, int pageSize, CancellationToken ct);
     Task RepRestoreAsync(Guid quotationId, Guid repUserId, CancellationToken ct);
+    Task RepPurgeAsync(Guid quotationId, Guid repUserId, CancellationToken ct);
 
     // Coordinator trash
     Task CoordinatorSoftDeleteAsync(Guid quotationId, Guid coordinatorUserId, CancellationToken ct);
     Task<PagedResult<QuotationDto>> CoordinatorGetTrashAsync(Guid coordinatorUserId, int page, int pageSize, CancellationToken ct);
     Task CoordinatorRestoreAsync(Guid quotationId, Guid coordinatorUserId, CancellationToken ct);
+    Task CoordinatorPurgeAsync(Guid quotationId, Guid coordinatorUserId, CancellationToken ct);
 
     // Customer trash
     Task CustomerSoftDeleteAsync(Guid quotationId, Guid customerUserId, CancellationToken ct);
     Task<PagedResult<QuotationDto>> CustomerGetTrashAsync(Guid customerUserId, int page, int pageSize, CancellationToken ct);
     Task CustomerRestoreAsync(Guid quotationId, Guid customerUserId, CancellationToken ct);
+    Task CustomerPurgeAsync(Guid quotationId, Guid customerUserId, CancellationToken ct);
 }

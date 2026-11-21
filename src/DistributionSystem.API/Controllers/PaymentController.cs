@@ -4,11 +4,9 @@ using DistributionSystem.Application.DTOs.Notification;
 using DistributionSystem.Application.DTOs.Payment;
 using DistributionSystem.Application.Services.Interfaces;
 using DistributionSystem.API.Hubs;
-using DistributionSystem.Infrastructure.Data.Repositories.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
-using Microsoft.EntityFrameworkCore;
 
 namespace DistributionSystem.API.Controllers;
 
@@ -25,16 +23,14 @@ public class PaymentController : ControllerBase
     private readonly INotificationService _notificationService;
     private readonly ICustomerService _customerService;
     private readonly IHubContext<NotificationHub> _notificationHub;
-    private readonly IUnitOfWork _unitOfWork;
 
     public PaymentController(IPaymentService paymentService, INotificationService notificationService,
-        ICustomerService customerService, IHubContext<NotificationHub> notificationHub, IUnitOfWork unitOfWork)
+        ICustomerService customerService, IHubContext<NotificationHub> notificationHub)
     {
         _paymentService = paymentService;
         _notificationService = notificationService;
         _customerService = customerService;
         _notificationHub = notificationHub;
-        _unitOfWork = unitOfWork;
     }
 
     private Guid GetUserId() => Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
@@ -99,13 +95,9 @@ public class PaymentController : ControllerBase
     [Authorize(Roles = "SalesRep")]
     public async Task<IActionResult> RecordPayment([FromBody] CreatePaymentRequest request, CancellationToken ct)
     {
-        var userId = GetUserId();
-        // resolve SalesRepProfile.Id from the logged-in user's UserId (rep profile id is the FK used by Payment.CollectedByRepId)
-        var repProfile = await _unitOfWork.Repository<Domain.Entities.SalesRepProfile>().Query()
-            .FirstOrDefaultAsync(r => r.UserId == userId, ct);
-        var collectedByRepId = repProfile?.Id;
-
-        var result = await _paymentService.CreateAsync(request, collectedByRepId, ct);
+        // Validate Rep/Customer assignment inside the application service.
+        // Never accept a CustomerId solely because the caller has the Rep role.
+        var result = await _paymentService.CreateForRepAsync(request, GetUserId(), ct);
 
         // Notify admin about new payment recorded
         await _notificationService.SendToRoleAsync(new BroadcastNotificationRequest
@@ -134,7 +126,8 @@ public class PaymentController : ControllerBase
     [Authorize(Roles = "SalesRep")]
     public async Task<IActionResult> GetCustomerBalance(Guid customerId, CancellationToken ct)
     {
-        var result = await _paymentService.GetCustomerLedgerAsync(customerId, ct);
+        // Prevent cross-Rep financial data exposure through a guessed CustomerId.
+        var result = await _paymentService.GetCustomerLedgerForRepAsync(customerId, GetUserId(), ct);
         return Ok(ApiResponse<CustomerLedgerDto>.SuccessResponse(result));
     }
 

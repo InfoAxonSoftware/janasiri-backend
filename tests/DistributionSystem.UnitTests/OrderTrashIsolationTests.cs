@@ -1,5 +1,7 @@
 using DistributionSystem.Application.DTOs.Order;
 using DistributionSystem.Application.Services.Implementations;
+using DistributionSystem.Application.Services.Interfaces;
+using Moq;
 using DistributionSystem.Application.Services.Background;
 using DistributionSystem.Domain.Entities;
 using DistributionSystem.Domain.Enums;
@@ -55,6 +57,59 @@ public class OrderTrashIsolationTests
     private enum ItemKind { Order, QuickOrder }
 
     private static UnifiedOrderFilterRequest All() => new() { PageSize = 100 };
+
+    [Fact]
+    public async Task Unified_personal_trash_uses_the_per_user_deletion_timestamp_for_both_order_types()
+    {
+        using var f = new OrderTrashFixture();
+        var quickService = new QuickRequestService(
+            new UnitOfWork(f.Db), Mock.Of<IFileStorageService>());
+
+        await f.Service.RepSoftDeleteAsync(f.OrderId, f.RepUserId);
+        await quickService.RepSoftDeleteAsync(f.QuickOrderId, f.RepUserId);
+
+        var page = await f.Service.GetUnifiedRepAsync(f.RepUserId, All(), true);
+        var orderItem = page.Items.Should().ContainSingle(x => x.Id == f.OrderId).Subject;
+        var orderDeletedAt = f.Db.UserRecordTrashes.Single(x =>
+            x.UserId == f.RepUserId && x.RecordKind == "Order" && x.RecordId == f.OrderId).DeletedAt;
+        orderItem.DeletedAt.Should().BeCloseTo(orderDeletedAt, TimeSpan.FromSeconds(1));
+        orderItem.Order!.DeletedAt.Should().BeCloseTo(orderDeletedAt, TimeSpan.FromSeconds(1));
+
+        var quickItem = page.Items.Should().ContainSingle(x => x.Id == f.QuickOrderId).Subject;
+        var quickDeletedAt = f.Db.UserRecordTrashes.Single(x =>
+            x.UserId == f.RepUserId && x.RecordKind == "QuickRequest" && x.RecordId == f.QuickOrderId).DeletedAt;
+        quickItem.DeletedAt.Should().BeCloseTo(quickDeletedAt, TimeSpan.FromSeconds(1));
+        quickItem.QuickOrder!.DeletedAt.Should().BeCloseTo(quickDeletedAt, TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task Legacy_purged_personal_record_cannot_be_reopened_by_duplicate_delete()
+    {
+        using var f = new OrderTrashFixture();
+        await f.Service.RepSoftDeleteAsync(f.OrderId, f.RepUserId);
+
+        var marker = f.Db.UserRecordTrashes.Single(x =>
+            x.UserId == f.RepUserId && x.RecordKind == "Order" && x.RecordId == f.OrderId);
+        var firstDeletedAt = marker.DeletedAt;
+
+        var duplicate = async () => await f.Service.RepSoftDeleteAsync(f.OrderId, f.RepUserId);
+        await duplicate.Should().ThrowAsync<DistributionSystem.Application.Exceptions.NotFoundException>();
+        marker.DeletedAt.Should().Be(firstDeletedAt);
+        marker.PurgedAt.Should().BeNull();
+
+        await new PersonalRecordTrash(new UnitOfWork(f.Db)).PermanentlyHideAsync(
+            f.RepUserId, PersonalRecordTrash.OrderKind, f.OrderId, default);
+        var purgedAt = marker.PurgedAt;
+        await duplicate.Should().ThrowAsync<DistributionSystem.Application.Exceptions.NotFoundException>();
+        marker.PurgedAt.Should().Be(purgedAt);
+
+        (await f.Service.GetUnifiedRepAsync(f.RepUserId, All(), true))
+            .Items.Should().NotContain(x => x.Id == f.OrderId);
+        (await f.Service.GetUnifiedRepAsync(f.RepUserId, All(), false))
+            .Items.Should().NotContain(x => x.Id == f.OrderId);
+        (await f.Service.GetUnifiedAdminAsync(All(), false))
+            .Items.Should().ContainSingle(x => x.Id == f.OrderId);
+    }
 
     [Fact]
     public async Task Admin_delete_hides_from_all_active_roles()
@@ -132,7 +187,6 @@ public class OrderTrashIsolationTests
 
         order.IsDeleted.Should().BeFalse();
         quick.IsDeletedByAdmin.Should().BeFalse();
-        order.IsDeletedByRep.Should().BeTrue();
         quick.IsDeletedByRep.Should().BeTrue();
     }
 
@@ -141,18 +195,17 @@ public class OrderTrashIsolationTests
     {
         using var f = new OrderTrashFixture();
         var order = await f.Db.Orders.FindAsync(f.OrderId);
-        order!.IsDeleted = order.IsDeletedByRep = true;
+        order!.IsDeleted = true;
         await f.Db.SaveChangesAsync();
         var personal = new PersonalRecordTrash(new UnitOfWork(f.Db));
+        await personal.HideAsync(f.RepUserId, PersonalRecordTrash.OrderKind, f.OrderId, default);
         await personal.HideAsync(f.CoordinatorUserId, PersonalRecordTrash.OrderKind, f.OrderId, default);
 
         await f.Service.AdminRestoreTrashAsync([new() { Id = f.OrderId, Kind = nameof(ItemKind.Order) }]);
         order.IsDeleted.Should().BeFalse();
-        order.IsDeletedByRep.Should().BeTrue();
-        f.Db.UserRecordTrashes.Single(x => x.RecordId == f.OrderId).PurgedAt.Should().BeNull();
+        f.Db.UserRecordTrashes.Single(x => x.RecordId == f.OrderId && x.UserId == f.RepUserId).PurgedAt.Should().BeNull();
 
         await f.Service.RepRestoreTrashAsync(f.RepUserId, [new() { Id = f.OrderId, Kind = nameof(ItemKind.Order) }]);
-        order.IsDeletedByRep.Should().BeFalse();
         f.Db.UserRecordTrashes.Should().ContainSingle(x => x.UserId == f.CoordinatorUserId);
 
         await f.Service.CoordinatorRestoreTrashAsync(f.CoordinatorUserId, [new() { Id = f.OrderId, Kind = nameof(ItemKind.Order) }]);
@@ -281,7 +334,7 @@ public class OrderTrashIsolationTests
     }
 
     [Fact]
-    public void Cleanup_job_does_not_query_orders_or_quick_requests()
+    public void Cleanup_job_expires_admin_trash_without_physical_deletion()
     {
         var root = new DirectoryInfo(AppContext.BaseDirectory);
         while (root != null && !Directory.Exists(Path.Combine(root.FullName, "src"))) root = root.Parent;
@@ -289,7 +342,12 @@ public class OrderTrashIsolationTests
         var source = File.ReadAllText(Path.Combine(root!.FullName, "src", "DistributionSystem.Application",
             "Services", "Background", nameof(TrashCleanupService) + ".cs"));
 
-        source.Should().NotContain("Repository<Order>");
-        source.Should().NotContain("Repository<QuickRequest>");
+        source.Should().Contain("ExpireAdminTrashAsync");
+        source.Should().Contain("AdminRecordTrashPurge.MarkOrder");
+source.Should().Contain("AdminRecordTrashPurge.MarkQuickRequest");
+source.Should().Contain("AdminRecordTrashPurge.MarkQuotation");
+        source.Should().NotContain("Repository<Order>().Remove");
+        source.Should().NotContain("Repository<QuickRequest>().Remove");
+        source.Should().NotContain("Repository<Quotation>().Remove");
     }
 }
