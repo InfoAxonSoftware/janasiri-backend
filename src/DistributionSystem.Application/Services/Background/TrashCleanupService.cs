@@ -24,6 +24,26 @@ public class TrashCleanupService : BackgroundService
         _logger = logger;
     }
 
+    // Batched and idempotent; callable from unit tests without running the scheduler.
+    internal static async Task<int> ExpirePersonalTrashAsync(
+        IUnitOfWork uow, DateTime cutoffUtc, CancellationToken ct)
+    {
+        var changed = 0;
+        const int batchSize = 200;
+        while (true)
+        {
+            var batch = await uow.Repository<UserRecordTrash>().Query()
+                .Where(x => x.PurgedAt == null && x.DeletedAt < cutoffUtc)
+                .OrderBy(x => x.DeletedAt).Take(batchSize).ToListAsync(ct);
+            if (batch.Count == 0) break;
+            var now = DateTime.UtcNow;
+            foreach (var entry in batch) entry.PurgedAt = now;
+            await uow.SaveChangesAsync(ct);
+            changed += batch.Count;
+        }
+        return changed;
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
@@ -45,6 +65,11 @@ public class TrashCleanupService : BackgroundService
                 var coordinatorService = scope.ServiceProvider.GetRequiredService<ICoordinatorService>();
 
                 var cutoff = DateTime.UtcNow.AddDays(-TrashRetentionDays);
+
+                // Per-user Trash expiry never restores a shared record. Purge the
+                // private Trash view while retaining the permanent hidden marker.
+                var expiredPersonalCount = await ExpirePersonalTrashAsync(uow, cutoff, stoppingToken);
+                _logger.LogInformation("TrashCleanupService: expired {Count} personal trash entries", expiredPersonalCount);
 
                 // ── Admin-deleted Quotations ──────────────────────────────────
                 var adminDeletedQuotations = await uow.Repository<Quotation>().Query()

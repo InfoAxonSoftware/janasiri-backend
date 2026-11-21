@@ -55,6 +55,7 @@ public class ApplicationDbContext : DbContext
     public DbSet<QuickRequestImage> QuickRequestImages => Set<QuickRequestImage>();
     public DbSet<QuickRequestAttachment> QuickRequestAttachments => Set<QuickRequestAttachment>();
     public DbSet<RepPayment> RepPayments => Set<RepPayment>();
+    public DbSet<UserRecordTrash> UserRecordTrashes => Set<UserRecordTrash>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

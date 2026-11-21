@@ -57,16 +57,36 @@ public class OrderTrashIsolationTests
     private static UnifiedOrderFilterRequest All() => new() { PageSize = 100 };
 
     [Fact]
-    public async Task Admin_delete_hides_only_from_admin()
+    public async Task Admin_delete_hides_from_all_active_roles()
     {
         using var f = new OrderTrashFixture();
 
-        await f.Service.AdminSoftDeleteAsync(f.OrderId, nameof(Admin_delete_hides_only_from_admin));
+        await f.Service.AdminSoftDeleteAsync(f.OrderId, nameof(Admin_delete_hides_from_all_active_roles));
 
         (await f.Service.GetUnifiedAdminAsync(All(), false)).Items.Should().NotContain(x => x.Id == f.OrderId);
         (await f.Service.GetUnifiedAdminAsync(All(), true)).Items.Should().ContainSingle(x => x.Id == f.OrderId);
-        (await f.Service.GetUnifiedRepAsync(f.RepUserId, All(), false)).Items.Should().ContainSingle(x => x.Id == f.OrderId);
-        (await f.Service.GetUnifiedCoordinatorAsync(f.CoordinatorUserId, All(), false)).Items.Should().ContainSingle(x => x.Id == f.OrderId);
+        (await f.Service.GetUnifiedRepAsync(f.RepUserId, All(), false)).Items.Should().NotContain(x => x.Id == f.OrderId);
+        (await f.Service.GetUnifiedCoordinatorAsync(f.CoordinatorUserId, All(), false)).Items.Should().NotContain(x => x.Id == f.OrderId);
+    }
+
+    [Fact]
+    public async Task Admin_deleted_quick_order_is_hidden_from_all_active_roles()
+    {
+        using var f = new OrderTrashFixture();
+        var quick = await f.Db.QuickRequests.FindAsync(f.QuickOrderId);
+        quick!.IsDeletedByAdmin = true;
+        quick.AdminDeletedAt = DateTime.UtcNow;
+        await f.Db.SaveChangesAsync();
+
+        (await f.Service.GetUnifiedAdminAsync(All(), false)).Items.Should().NotContain(x => x.Id == f.QuickOrderId);
+        (await f.Service.GetUnifiedAdminAsync(All(), true)).Items.Should().ContainSingle(x => x.Id == f.QuickOrderId);
+        (await f.Service.GetUnifiedRepAsync(f.RepUserId, All(), false)).Items.Should().NotContain(x => x.Id == f.QuickOrderId);
+        (await f.Service.GetUnifiedCoordinatorAsync(f.CoordinatorUserId, All(), false)).Items.Should().NotContain(x => x.Id == f.QuickOrderId);
+
+        quick.IsDeletedByAdmin = false;
+        quick.AdminDeletedAt = null;
+        await f.Db.SaveChangesAsync();
+        (await f.Service.GetUnifiedRepAsync(f.RepUserId, All(), false)).Items.Should().ContainSingle(x => x.Id == f.QuickOrderId);
     }
 
     [Fact]
@@ -121,27 +141,23 @@ public class OrderTrashIsolationTests
     {
         using var f = new OrderTrashFixture();
         var order = await f.Db.Orders.FindAsync(f.OrderId);
-        order!.IsDeleted = order.IsDeletedByRep = order.IsDeletedByCoordinator = true;
+        order!.IsDeleted = order.IsDeletedByRep = true;
         await f.Db.SaveChangesAsync();
+        var personal = new PersonalRecordTrash(new UnitOfWork(f.Db));
+        await personal.HideAsync(f.CoordinatorUserId, PersonalRecordTrash.OrderKind, f.OrderId, default);
 
         await f.Service.AdminRestoreTrashAsync([new() { Id = f.OrderId, Kind = nameof(ItemKind.Order) }]);
         order.IsDeleted.Should().BeFalse();
         order.IsDeletedByRep.Should().BeTrue();
-        order.IsDeletedByCoordinator.Should().BeTrue();
+        f.Db.UserRecordTrashes.Single(x => x.RecordId == f.OrderId).PurgedAt.Should().BeNull();
 
-        order.IsDeleted = true;
-        await f.Db.SaveChangesAsync();
         await f.Service.RepRestoreTrashAsync(f.RepUserId, [new() { Id = f.OrderId, Kind = nameof(ItemKind.Order) }]);
-        order.IsDeleted.Should().BeTrue();
         order.IsDeletedByRep.Should().BeFalse();
-        order.IsDeletedByCoordinator.Should().BeTrue();
+        f.Db.UserRecordTrashes.Should().ContainSingle(x => x.UserId == f.CoordinatorUserId);
 
-        order.IsDeletedByRep = true;
-        await f.Db.SaveChangesAsync();
         await f.Service.CoordinatorRestoreTrashAsync(f.CoordinatorUserId, [new() { Id = f.OrderId, Kind = nameof(ItemKind.Order) }]);
-        order.IsDeleted.Should().BeTrue();
-        order.IsDeletedByRep.Should().BeTrue();
-        order.IsDeletedByCoordinator.Should().BeFalse();
+        order.IsDeleted.Should().BeFalse();
+        f.Db.UserRecordTrashes.Should().NotContain(x => x.UserId == f.CoordinatorUserId);
     }
 
     [Fact]
@@ -183,17 +199,17 @@ public class OrderTrashIsolationTests
     }
 
     [Fact]
-    public async Task Admin_permanent_delete_affects_only_admin_visibility()
+    public async Task Admin_purge_keeps_record_globally_hidden()
     {
         using var f = new OrderTrashFixture();
-        await f.Service.AdminSoftDeleteAsync(f.OrderId, nameof(Admin_permanent_delete_affects_only_admin_visibility));
+        await f.Service.AdminSoftDeleteAsync(f.OrderId, nameof(Admin_purge_keeps_record_globally_hidden));
 
         await f.Service.AdminPurgeTrashAsync([new() { Id = f.OrderId, Kind = nameof(ItemKind.Order) }]);
 
         (await f.Db.Orders.FindAsync(f.OrderId)).Should().NotBeNull();
         (await f.Service.GetUnifiedAdminAsync(All(), true)).Items.Should().NotContain(x => x.Id == f.OrderId);
-        (await f.Service.GetUnifiedRepAsync(f.RepUserId, All(), false)).Items.Should().ContainSingle(x => x.Id == f.OrderId);
-        (await f.Service.GetUnifiedCoordinatorAsync(f.CoordinatorUserId, All(), false)).Items.Should().ContainSingle(x => x.Id == f.OrderId);
+        (await f.Service.GetUnifiedRepAsync(f.RepUserId, All(), false)).Items.Should().NotContain(x => x.Id == f.OrderId);
+        (await f.Service.GetUnifiedCoordinatorAsync(f.CoordinatorUserId, All(), false)).Items.Should().NotContain(x => x.Id == f.OrderId);
     }
 
     [Fact]
@@ -217,14 +233,17 @@ public class OrderTrashIsolationTests
         using var f = new OrderTrashFixture();
         var order = await f.Db.Orders.FindAsync(f.OrderId);
         var quick = await f.Db.QuickRequests.FindAsync(f.QuickOrderId);
-        order!.IsDeleted = order.IsDeletedByCoordinator = true;
-        quick!.IsDeletedByAdmin = quick.IsDeletedByCoordinator = true;
+        order!.IsDeleted = true;
+        quick!.IsDeletedByAdmin = true;
         await f.Db.SaveChangesAsync();
+        var personal = new PersonalRecordTrash(new UnitOfWork(f.Db));
+        await personal.HideAsync(f.CoordinatorUserId, PersonalRecordTrash.OrderKind, f.OrderId, default);
+        await personal.HideAsync(f.CoordinatorUserId, PersonalRecordTrash.QuickRequestKind, f.QuickOrderId, default);
 
         await f.Service.CoordinatorEmptyTrashAsync(f.CoordinatorUserId);
 
-        order.IsPurgedByCoordinator.Should().BeTrue();
-        quick.IsPurgedByCoordinator.Should().BeTrue();
+        f.Db.UserRecordTrashes.Where(x => x.UserId == f.CoordinatorUserId)
+            .Should().HaveCount(2).And.OnlyContain(x => x.PurgedAt.HasValue);
         order.IsPurgedByAdmin.Should().BeFalse();
         quick.IsPurgedByAdmin.Should().BeFalse();
         (await f.Service.GetUnifiedAdminAsync(All(), true)).Items.Should().Contain(x => x.Id == f.OrderId);

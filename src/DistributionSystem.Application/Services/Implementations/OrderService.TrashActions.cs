@@ -61,11 +61,55 @@ public partial class OrderService
     private async Task MutateTrashAsync(string role, Guid? repId, Guid? coordinatorId,
         IReadOnlyCollection<OrderTrashItemRequest> rawItems, bool restore, CancellationToken ct)
     {
+        if (role == CoordinatorTrashRole)
+        {
+            await MutateCoordinatorTrashAsync(coordinatorId!.Value, rawItems, restore, ct);
+            return;
+        }
+
         var now = DateTime.UtcNow;
         foreach (var item in ValidateTrashItems(rawItems))
         {
             if (item.Kind == OrderKind) await MutateOrderAsync(item.Id, role, repId, coordinatorId, restore, now, ct);
             else await MutateQuickOrderAsync(item.Id, role, repId, coordinatorId, restore, now, ct);
+        }
+        await _unitOfWork.SaveChangesAsync(ct);
+    }
+
+    private async Task MutateCoordinatorTrashAsync(
+        Guid coordinatorId, IReadOnlyCollection<OrderTrashItemRequest> rawItems,
+        bool restore, CancellationToken ct)
+    {
+        var coordinatorUserId = await _unitOfWork.Repository<CoordinatorProfile>().Query()
+            .Where(c => c.Id == coordinatorId).Select(c => c.UserId).SingleAsync(ct);
+        var entries = _unitOfWork.Repository<UserRecordTrash>();
+        var now = DateTime.UtcNow;
+
+        // Validate every selected item before mutating any entry.
+        var actions = new List<UserRecordTrash>();
+        foreach (var item in ValidateTrashItems(rawItems))
+        {
+            var kind = item.Kind == OrderKind ? PersonalRecordTrash.OrderKind : PersonalRecordTrash.QuickRequestKind;
+            var allowed = item.Kind == OrderKind
+                ? await _unitOfWork.Repository<Order>().Query().AnyAsync(o => o.Id == item.Id &&
+                    !o.IsDeleted && !o.IsPurgedByAdmin &&
+                    (o.Customer.AssignedCoordinatorId == coordinatorId ||
+                     (o.RepId.HasValue && o.Rep != null &&
+                      o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId))), ct)
+                : await _unitOfWork.Repository<QuickRequest>().Query().AnyAsync(r => r.Id == item.Id &&
+                    r.Type == QuickRequestType.Order && !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
+                    r.Rep != null && r.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId), ct);
+            if (!allowed) throw new NotFoundException(item.Kind, item.Id);
+
+            var entry = await entries.Query().FirstOrDefaultAsync(x => x.UserId == coordinatorUserId &&
+                x.RecordKind == kind && x.RecordId == item.Id && x.PurgedAt == null, ct)
+                ?? throw new NotFoundException("Trash entry", item.Id);
+            actions.Add(entry);
+        }
+        foreach (var entry in actions)
+        {
+            if (restore) entries.Remove(entry);
+            else entry.PurgedAt = now;
         }
         await _unitOfWork.SaveChangesAsync(ct);
     }
@@ -140,6 +184,19 @@ public partial class OrderService
 
     private async Task EmptyTrashAsync(string role, Guid? repId, Guid? coordinatorId, CancellationToken ct)
     {
+        if (role == CoordinatorTrashRole)
+        {
+            var userId = await _unitOfWork.Repository<CoordinatorProfile>().Query()
+                .Where(c => c.Id == coordinatorId).Select(c => c.UserId).SingleAsync(ct);
+            var entries = await _unitOfWork.Repository<UserRecordTrash>().Query()
+                .Where(x => x.UserId == userId && x.PurgedAt == null &&
+                    (x.RecordKind == PersonalRecordTrash.OrderKind ||
+                     x.RecordKind == PersonalRecordTrash.QuickRequestKind))
+                .ToListAsync(ct);
+            foreach (var entry in entries) entry.PurgedAt = DateTime.UtcNow;
+            await _unitOfWork.SaveChangesAsync(ct);
+            return;
+        }
         var orders = _unitOfWork.Repository<Order>().Query();
         var quick = _unitOfWork.Repository<QuickRequest>().Query().Where(r => r.Type == QuickRequestType.Order);
         if (role == AdminTrashRole)

@@ -219,6 +219,7 @@ public class QuickRequestService : IQuickRequestService
             .Include(r => r.Rep)
             .Where(r =>
                 r.RepId == rep.Id &&
+                !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
                 !r.IsDeletedByRep &&
                 !r.IsPurgedByRep);
 
@@ -256,7 +257,8 @@ public class QuickRequestService : IQuickRequestService
             .Include(r => r.Attachments)
             .Include(r => r.Rep)
             .FirstOrDefaultAsync(
-                r => r.Id == requestId && r.RepId == rep.Id,
+                r => r.Id == requestId && r.RepId == rep.Id &&
+                    !r.IsDeletedByAdmin && !r.IsPurgedByAdmin && !r.IsDeletedByRep && !r.IsPurgedByRep,
                 ct)
             ?? throw new NotFoundException(
                 "Quick request",
@@ -433,7 +435,7 @@ public class QuickRequestService : IQuickRequestService
             .Include(r => r.Attachments)
             .Include(r => r.Rep)
             .FirstOrDefaultAsync(
-                r => r.Id == requestId,
+                r => r.Id == requestId && !r.IsDeletedByAdmin && !r.IsPurgedByAdmin,
                 ct)
             ?? throw new NotFoundException(
                 "Quick request",
@@ -467,6 +469,7 @@ public class QuickRequestService : IQuickRequestService
             .Select(rc => rc.RepId)
             .ToListAsync(ct);
 
+        var personalTrash = _uow.Repository<UserRecordTrash>().Query();
         var request = await _uow.Repository<QuickRequest>().Query()
             .Include(r => r.Images)
             .Include(r => r.Attachments)
@@ -475,7 +478,10 @@ public class QuickRequestService : IQuickRequestService
                 r =>
                     r.Id == requestId &&
                     r.RepId.HasValue &&
-                    repIds.Contains(r.RepId.Value),
+                    repIds.Contains(r.RepId.Value) &&
+                    !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
+                    !personalTrash.Any(t => t.UserId == coordinatorUserId &&
+                        t.RecordKind == PersonalRecordTrash.QuickRequestKind && t.RecordId == r.Id),
                 ct)
             ?? throw new NotFoundException(
                 "Quick request",
@@ -686,6 +692,7 @@ public class QuickRequestService : IQuickRequestService
             .Where(r =>
                 r.RepId == rep.Id &&
                 r.IsDeletedByRep &&
+                !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
                 !r.IsPurgedByRep);
 
         if (!string.IsNullOrEmpty(type) &&
@@ -759,23 +766,23 @@ public class QuickRequestService : IQuickRequestService
             .Select(rc => rc.RepId)
             .ToListAsync(ct);
 
+        var personalTrash = _uow.Repository<UserRecordTrash>().Query();
         var request = await _uow.Repository<QuickRequest>().Query()
             .FirstOrDefaultAsync(
                 r =>
                     r.Id == requestId &&
                     r.RepId.HasValue &&
                     repIds.Contains(r.RepId.Value) &&
-                    !r.IsDeletedByCoordinator &&
-                    !r.IsPurgedByCoordinator,
+                    !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
+                    !personalTrash.Any(t => t.UserId == coordinatorUserId &&
+                        t.RecordKind == PersonalRecordTrash.QuickRequestKind && t.RecordId == r.Id),
                 ct)
             ?? throw new NotFoundException(
                 "Quick request",
                 requestId);
 
-        request.IsDeletedByCoordinator = true;
-        request.CoordinatorDeletedAt = DateTime.UtcNow;
-
-        await _uow.SaveChangesAsync(ct);
+        await new PersonalRecordTrash(_uow).HideAsync(
+            coordinatorUserId, PersonalRecordTrash.QuickRequestKind, requestId, ct);
     }
 
     public async Task<List<QuickRequestDto>> GetForCoordinatorAsync(
@@ -798,6 +805,7 @@ public class QuickRequestService : IQuickRequestService
             .Select(rc => rc.RepId)
             .ToListAsync(ct);
 
+        var personalTrash = _uow.Repository<UserRecordTrash>().Query();
         var query = _uow.Repository<QuickRequest>().Query()
             .Include(r => r.Images)
             .Include(r => r.Attachments)
@@ -805,8 +813,9 @@ public class QuickRequestService : IQuickRequestService
             .Where(r =>
                 r.RepId.HasValue &&
                 repIds.Contains(r.RepId.Value) &&
-                !r.IsDeletedByCoordinator &&
-                !r.IsPurgedByCoordinator);
+                !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
+                !personalTrash.Any(t => t.UserId == coordinatorUserId &&
+                    t.RecordKind == PersonalRecordTrash.QuickRequestKind && t.RecordId == r.Id));
 
         if (!string.IsNullOrEmpty(type) &&
             Enum.TryParse<QuickRequestType>(
@@ -864,7 +873,7 @@ public class QuickRequestService : IQuickRequestService
                 r =>
                     r.Id == requestId &&
                     r.RepId.HasValue &&
-                    repIds.Contains(r.RepId.Value),
+                    repIds.Contains(r.RepId.Value) && !r.IsDeletedByAdmin && !r.IsPurgedByAdmin,
                 ct)
             ?? throw new NotFoundException(
                 "Quick request",
@@ -907,6 +916,7 @@ public class QuickRequestService : IQuickRequestService
             .Select(rc => rc.RepId)
             .ToListAsync(ct);
 
+        var personalTrash = _uow.Repository<UserRecordTrash>().Query();
         var query = _uow.Repository<QuickRequest>().Query()
             .Include(r => r.Images)
             .Include(r => r.Attachments)
@@ -914,8 +924,10 @@ public class QuickRequestService : IQuickRequestService
             .Where(r =>
                 r.RepId.HasValue &&
                 repIds.Contains(r.RepId.Value) &&
-                r.IsDeletedByCoordinator &&
-                !r.IsPurgedByCoordinator);
+                !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
+                personalTrash.Any(t => t.UserId == coordinatorUserId &&
+                    t.RecordKind == PersonalRecordTrash.QuickRequestKind &&
+                    t.RecordId == r.Id && t.PurgedAt == null));
 
         if (!string.IsNullOrEmpty(type) &&
             Enum.TryParse<QuickRequestType>(
@@ -927,7 +939,9 @@ public class QuickRequestService : IQuickRequestService
         }
 
         var list = await query
-            .OrderByDescending(r => r.CoordinatorDeletedAt)
+            .OrderByDescending(r => personalTrash.Where(t => t.UserId == coordinatorUserId &&
+                t.RecordKind == PersonalRecordTrash.QuickRequestKind && t.RecordId == r.Id)
+                .Select(t => t.DeletedAt).FirstOrDefault())
             .ToListAsync(ct);
 
         return list
@@ -955,23 +969,24 @@ public class QuickRequestService : IQuickRequestService
             .Select(rc => rc.RepId)
             .ToListAsync(ct);
 
+        var personalTrash = _uow.Repository<UserRecordTrash>().Query();
         var request = await _uow.Repository<QuickRequest>().Query()
             .FirstOrDefaultAsync(
                 r =>
                     r.Id == requestId &&
                     r.RepId.HasValue &&
                     repIds.Contains(r.RepId.Value) &&
-                    r.IsDeletedByCoordinator &&
-                    !r.IsPurgedByCoordinator,
+                    !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
+                    personalTrash.Any(t => t.UserId == coordinatorUserId &&
+                        t.RecordKind == PersonalRecordTrash.QuickRequestKind &&
+                        t.RecordId == r.Id && t.PurgedAt == null),
                 ct)
             ?? throw new NotFoundException(
                 "Quick request",
                 requestId);
 
-        request.IsDeletedByCoordinator = false;
-        request.CoordinatorDeletedAt = null;
-
-        await _uow.SaveChangesAsync(ct);
+        await new PersonalRecordTrash(_uow).RestoreAsync(
+            coordinatorUserId, PersonalRecordTrash.QuickRequestKind, requestId, ct);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

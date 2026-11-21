@@ -2589,6 +2589,39 @@ namespace DistributionSystem.Infrastructure.Migrations
                     b.ToTable("Users", (string)null);
                 });
 
+            modelBuilder.Entity("DistributionSystem.Domain.Entities.UserRecordTrash", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("DeletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("PurgedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("RecordId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("RecordKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeletedAt", "PurgedAt");
+
+                    b.HasIndex("UserId", "RecordKind", "RecordId")
+                        .IsUnique();
+
+                    b.ToTable("UserRecordTrashes", (string)null);
+                });
+
             modelBuilder.Entity("DistributionSystem.Domain.Entities.Visit", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3339,6 +3372,15 @@ namespace DistributionSystem.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("Report");
+                });
+
+            modelBuilder.Entity("DistributionSystem.Domain.Entities.UserRecordTrash", b =>
+                {
+                    b.HasOne("DistributionSystem.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("DistributionSystem.Domain.Entities.Visit", b =>
