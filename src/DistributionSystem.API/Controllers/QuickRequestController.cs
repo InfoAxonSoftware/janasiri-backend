@@ -70,21 +70,25 @@ public class QuickRequestController : ControllerBase
     {
         if (User.IsInRole("Admin") || User.IsInRole("SuperAdmin"))
         {
-            await _service.GetByIdAsync(requestId, ct);
+            // Authorized Admins may inspect attachments within Admin Trash,
+            // but not after the irreversible Admin Trash purge.
+            await _service.GetByIdAsync(requestId, ct, includeAdminTrash: true);
         }
         else if (User.IsInRole("SalesCoordinator"))
         {
             await _service.GetForCoordinatorByIdAsync(
                 requestId,
                 GetUserId(),
-                ct);
+                ct,
+                includePersonalTrash: true);
         }
         else
         {
             await _service.GetRepRequestByIdAsync(
                 requestId,
                 GetUserId(),
-                ct);
+                ct,
+                includePersonalTrash: true);
         }
 
         var storageKey = await _service.GetImageStorageKeyAsync(
@@ -506,6 +510,14 @@ public class QuickRequestController : ControllerBase
                 "Quick request restored."));
     }
 
+    [HttpPost("admin/quick-requests/{id:guid}/permanent")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    public async Task<IActionResult> AdminPurgeQuickRequest(Guid id, CancellationToken ct)
+    {
+        await _service.AdminPurgeAsync(id, ct);
+        return Ok(ApiResponse<string>.SuccessResponse("Removed from Admin Trash; audit record retained."));
+    }
+
     // ── Rep: Trash ───────────────────────────────────────────────────────────
 
     [HttpDelete("rep/quick-requests/{id:guid}")]
@@ -557,6 +569,14 @@ public class QuickRequestController : ControllerBase
             ApiResponse<string>.SuccessResponse(
                 "Restored.",
                 "Quick request restored."));
+    }
+
+    [HttpPost("rep/quick-requests/{id:guid}/permanent")]
+    [Authorize(Roles = "SalesRep")]
+    public async Task<IActionResult> RepPurgeQuickRequest(Guid id, CancellationToken ct)
+    {
+        await _service.RepPurgeAsync(id, GetUserId(), ct);
+        return Ok(ApiResponse<string>.SuccessResponse("Removed from your Trash; record retained."));
     }
 
     // ── Coordinator ──────────────────────────────────────────────────────────
@@ -630,6 +650,14 @@ public class QuickRequestController : ControllerBase
             ApiResponse<string>.SuccessResponse(
                 "Restored.",
                 "Quick request restored."));
+    }
+
+    [HttpPost("coordinator/quick-requests/{id:guid}/permanent")]
+    [Authorize(Roles = "SalesCoordinator")]
+    public async Task<IActionResult> CoordinatorPurgeQuickRequest(Guid id, CancellationToken ct)
+    {
+        await _service.CoordinatorPurgeAsync(id, GetUserId(), ct);
+        return Ok(ApiResponse<string>.SuccessResponse("Removed from your Trash; record retained."));
     }
 
     [HttpGet("coordinator/quick-requests")]

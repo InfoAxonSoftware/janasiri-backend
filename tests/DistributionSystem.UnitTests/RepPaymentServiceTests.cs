@@ -436,24 +436,23 @@ public class RepPaymentTrashIndependenceTests : IClassFixture<RepPaymentServiceF
     public RepPaymentTrashIndependenceTests(RepPaymentServiceFixture f) => _f = f;
 
     [Fact]
-    public async Task AdminTrash_DoesNotAffect_CoordinatorOrRepVisibility()
+    public async Task AdminTrash_HidesPaymentGloballyWithoutDeletingEvidence()
     {
         var payment = await _f.CreateAndSettleAsync(_f.RepAUserId, "Trash Co", 250, expectedNotifications: 3);
 
         await _f.Service.AdminSoftDeleteAsync(payment.Id, "Admin User");
 
-        var adminActive = await _f.Service.GetAllAsync();
-        adminActive.Should().NotContain(p => p.Id == payment.Id);
+        (await _f.Service.GetAllAsync()).Should().NotContain(p => p.Id == payment.Id);
+        (await _f.Service.GetForCoordinatorAsync(_f.CoordinatorAUserId, trash: false))
+            .Should().NotContain(p => p.Id == payment.Id);
+        (await _f.Service.GetRepPaymentsAsync(_f.RepAUserId, trash: false))
+            .Should().NotContain(p => p.Id == payment.Id);
+        (await _f.Service.AdminGetTrashAsync())
+            .Should().Contain(p => p.Id == payment.Id);
 
-        var coordinatorActive = await _f.Service.GetForCoordinatorAsync(_f.CoordinatorAUserId, trash: false);
-        coordinatorActive.Should().Contain(p => p.Id == payment.Id);
-
-        var repActive = await _f.Service.GetRepPaymentsAsync(_f.RepAUserId, trash: false);
-        repActive.Should().Contain(p => p.Id == payment.Id);
-
-        // Trashing must not alter status or delete evidence metadata.
-        var reloaded = coordinatorActive.First(p => p.Id == payment.Id);
-        reloaded.Status.Should().Be("AwaitingConfirmation");
+        var stored = _f.Db.RepPayments.Single(p => p.Id == payment.Id);
+        stored.Status.Should().Be(RepPaymentStatus.AwaitingConfirmation);
+        stored.IsDeletedByAdmin.Should().BeTrue();
     }
 
     [Fact]
@@ -497,13 +496,82 @@ public class RepPaymentTrashIndependenceTests : IClassFixture<RepPaymentServiceF
     }
 
     [Fact]
+    public async Task RepPurge_RemovesPersonalTrashOnlyAndRetainsPayment()
+    {
+        var payment = await _f.CreateAndSettleAsync(_f.RepAUserId, "Rep Purge Co", 515, expectedNotifications: 3);
+        await _f.Service.RepTrashAsync(payment.Id, _f.RepAUserId);
+        await _f.Service.RepPurgeAsync(payment.Id, _f.RepAUserId);
+
+        (await _f.Service.GetRepPaymentsAsync(_f.RepAUserId, trash: true))
+            .Should().NotContain(p => p.Id == payment.Id);
+        (await _f.Service.GetRepPaymentsAsync(_f.RepAUserId, trash: false))
+            .Should().NotContain(p => p.Id == payment.Id);
+        (await _f.Service.GetAllAsync()).Should().Contain(p => p.Id == payment.Id);
+        _f.Db.RepPayments.Should().Contain(p => p.Id == payment.Id);
+    }
+
+    [Fact]
+    public async Task EvidenceCanBeReadFromPersonalTrashButNotAfterPurge()
+    {
+        var payment = await _f.CreateAndSettleAsync(_f.RepAUserId, "Evidence Co", 520, expectedNotifications: 3);
+        await _f.Service.RepTrashAsync(payment.Id, _f.RepAUserId);
+
+        var normalDetail = async () => await _f.Service.GetForRepByIdAsync(payment.Id, _f.RepAUserId);
+        await normalDetail.Should().ThrowAsync<NotFoundException>();
+
+        var trashEvidence = await _f.Service.GetForRepByIdAsync(
+            payment.Id, _f.RepAUserId, includePersonalTrash: true);
+        trashEvidence.Id.Should().Be(payment.Id);
+
+        await _f.Service.RepPurgeAsync(payment.Id, _f.RepAUserId);
+        var purgedEvidence = async () => await _f.Service.GetForRepByIdAsync(
+            payment.Id, _f.RepAUserId, includePersonalTrash: true);
+        await purgedEvidence.Should().ThrowAsync<NotFoundException>();
+    }
+
+    [Fact]
+    public async Task Admin_evidence_in_Trash_is_readable_only_before_final_purge()
+    {
+        var payment = await _f.CreateAndSettleAsync(_f.RepAUserId, "Admin evidence", 523, expectedNotifications: 3);
+        await _f.Service.AdminSoftDeleteAsync(payment.Id, "Admin");
+
+        var active = async () => await _f.Service.GetByIdForAdminAsync(payment.Id);
+        await active.Should().ThrowAsync<NotFoundException>();
+
+        (await _f.Service.GetByIdForAdminAsync(payment.Id, includeAdminTrash: true))
+            .Id.Should().Be(payment.Id);
+
+        await _f.Service.AdminPurgeAsync(payment.Id);
+        var purged = async () => await _f.Service.GetByIdForAdminAsync(
+            payment.Id, includeAdminTrash: true);
+        await purged.Should().ThrowAsync<NotFoundException>();
+    }
+
+    [Fact]
+    public async Task AdminPurge_RetainsFinancialRowButHidesAdminTrash()
+    {
+        var payment = await _f.CreateAndSettleAsync(_f.RepAUserId, "Admin Purge Co", 525, expectedNotifications: 3);
+        await _f.Service.AdminSoftDeleteAsync(payment.Id, "Admin User");
+        await _f.Service.AdminPurgeAsync(payment.Id);
+
+        (await _f.Service.AdminGetTrashAsync())
+            .Should().NotContain(p => p.Id == payment.Id);
+        var stored = _f.Db.RepPayments.Single(p => p.Id == payment.Id);
+        stored.IsPurgedByAdmin.Should().BeTrue();
+        stored.AdminPurgedAt.Should().NotBeNull();
+        var restore = async () => await _f.Service.AdminRestoreAsync(payment.Id);
+        await restore.Should().ThrowAsync<NotFoundException>();
+    }
+
+    [Fact]
     public async Task Restore_OnlyClearsCurrentRoleTrashState()
     {
         var payment = await _f.CreateAndSettleAsync(_f.RepAUserId, "Restore Co", 600, expectedNotifications: 3);
 
-        await _f.Service.AdminSoftDeleteAsync(payment.Id, "Admin User");
         await _f.Service.CoordinatorTrashAsync(payment.Id, _f.CoordinatorAUserId);
+        await _f.Service.AdminSoftDeleteAsync(payment.Id, "Admin User");
 
+        // Global restore must not clear this Coordinator's personal Trash entry.
         await _f.Service.AdminRestoreAsync(payment.Id);
 
         var adminActive = await _f.Service.GetAllAsync();

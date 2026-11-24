@@ -208,6 +208,15 @@ public class QuotationController : ControllerBase
         return Ok(ApiResponse<string>.SuccessResponse("Quotation restored"));
     }
 
+    /// <summary>Remove a quotation from Admin Trash while retaining its audit record</summary>
+    [HttpPost("admin/quotations/{id}/permanent")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
+    public async Task<IActionResult> AdminPurgeQuotation(Guid id, CancellationToken ct)
+    {
+        await _quotationService.AdminPurgeAsync(id, ct);
+        return Ok(ApiResponse<string>.SuccessResponse("Removed from Admin Trash; audit record retained."));
+    }
+
     // ===== REP TRASH =====
 
     [HttpDelete("rep/quotations/{id}")]
@@ -232,6 +241,14 @@ public class QuotationController : ControllerBase
     {
         await _quotationService.RepRestoreAsync(id, GetUserId(), ct);
         return Ok(ApiResponse<string>.SuccessResponse("Quotation restored"));
+    }
+
+    [HttpPost("rep/quotations/{id}/permanent")]
+    [Authorize(Roles = "SalesRep")]
+    public async Task<IActionResult> RepPurgeQuotation(Guid id, CancellationToken ct)
+    {
+        await _quotationService.RepPurgeAsync(id, GetUserId(), ct);
+        return Ok(ApiResponse<string>.SuccessResponse("Removed from your Trash; record retained."));
     }
 
     // ===== COORDINATOR TRASH =====
@@ -260,6 +277,14 @@ public class QuotationController : ControllerBase
         return Ok(ApiResponse<string>.SuccessResponse("Quotation restored"));
     }
 
+    [HttpPost("coordinator/quotations/{id}/permanent")]
+    [Authorize(Roles = "SalesCoordinator")]
+    public async Task<IActionResult> CoordinatorPurgeQuotation(Guid id, CancellationToken ct)
+    {
+        await _quotationService.CoordinatorPurgeAsync(id, GetUserId(), ct);
+        return Ok(ApiResponse<string>.SuccessResponse("Removed from your Trash; record retained."));
+    }
+
     // ===== CUSTOMER TRASH =====
 
     [HttpDelete("customer/quotations/{id}")]
@@ -284,6 +309,14 @@ public class QuotationController : ControllerBase
     {
         await _quotationService.CustomerRestoreAsync(id, GetUserId(), ct);
         return Ok(ApiResponse<string>.SuccessResponse("Quotation restored"));
+    }
+
+    [HttpPost("customer/quotations/{id}/permanent")]
+    [Authorize(Roles = "Customer")]
+    public async Task<IActionResult> CustomerPurgeQuotation(Guid id, CancellationToken ct)
+    {
+        await _quotationService.CustomerPurgeAsync(id, GetUserId(), ct);
+        return Ok(ApiResponse<string>.SuccessResponse("Removed from your Trash; record retained."));
     }
 }
 

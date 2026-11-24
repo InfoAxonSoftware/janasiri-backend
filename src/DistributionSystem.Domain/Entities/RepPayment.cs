@@ -21,6 +21,8 @@ public class RepPayment
     // does not affect visibility for the other roles.
     public bool IsDeletedByAdmin { get; set; }
     public DateTime? AdminDeletedAt { get; set; }
+    public bool IsPurgedByAdmin { get; set; }
+    public DateTime? AdminPurgedAt { get; set; }
 
     public bool IsDeletedByCoordinator { get; set; }
     public DateTime? CoordinatorDeletedAt { get; set; }

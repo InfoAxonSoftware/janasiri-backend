@@ -18,26 +18,28 @@ public partial class OrderService
 
     public Task<PagedResult<UnifiedOrderDto>> GetUnifiedAdminAsync(
         UnifiedOrderFilterRequest filter, bool trash, CancellationToken ct = default) =>
-        GetUnifiedAsync(AdminTrashRole, null, null, filter, trash, ct);
+        GetUnifiedAsync(AdminTrashRole, null, null, null, filter, trash, ct);
 
     public async Task<PagedResult<UnifiedOrderDto>> GetUnifiedRepAsync(
         Guid userId, UnifiedOrderFilterRequest filter, bool trash, CancellationToken ct = default)
     {
         var repId = await ResolveRepIdAsync(userId, ct);
-        return await GetUnifiedAsync(RepTrashRole, repId, null, filter, trash, ct);
+        return await GetUnifiedAsync(RepTrashRole, repId, null, userId, filter, trash, ct);
     }
 
     public async Task<PagedResult<UnifiedOrderDto>> GetUnifiedCoordinatorAsync(
         Guid userId, UnifiedOrderFilterRequest filter, bool trash, CancellationToken ct = default)
     {
         var coordinatorId = await ResolveCoordinatorIdAsync(userId, ct);
-        return await GetUnifiedAsync(CoordinatorTrashRole, null, coordinatorId, filter, trash, ct);
+        return await GetUnifiedAsync(CoordinatorTrashRole, null, coordinatorId, userId, filter, trash, ct);
     }
 
     private async Task<PagedResult<UnifiedOrderDto>> GetUnifiedAsync(
-        string role, Guid? repId, Guid? coordinatorId,
+        string role, Guid? repId, Guid? coordinatorId, Guid? viewerUserId,
         UnifiedOrderFilterRequest filter, bool trash, CancellationToken ct)
     {
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query().AsNoTracking();
+        var userId = viewerUserId ?? Guid.Empty;
         var orders = _unitOfWork.Repository<Order>().Query().AsNoTracking();
         var quickOrders = _unitOfWork.Repository<QuickRequest>().Query().AsNoTracking()
             .Where(r => r.Type == QuickRequestType.Order);
@@ -49,24 +51,43 @@ public partial class OrderService
         }
         else if (role == RepTrashRole)
         {
-            orders = orders.Where(o => o.RepId == repId && (trash ? o.IsDeletedByRep && !o.IsPurgedByRep : !o.IsDeletedByRep && !o.IsPurgedByRep));
-            quickOrders = quickOrders.Where(r => r.RepId == repId && (trash ? r.IsDeletedByRep && !r.IsPurgedByRep : !r.IsDeletedByRep && !r.IsPurgedByRep));
+            orders = orders.Where(o => !o.IsDeleted && !o.IsPurgedByAdmin && o.RepId == repId &&
+                (trash
+                    ? personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.OrderKind &&
+                        t.RecordId == o.Id && t.PurgedAt == null)
+                    : !personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.OrderKind &&
+                        t.RecordId == o.Id)));
+            quickOrders = quickOrders.Where(r => !r.IsDeletedByAdmin && !r.IsPurgedByAdmin && r.RepId == repId &&
+                (trash
+                    ? personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.QuickRequestKind &&
+                        t.RecordId == r.Id && t.PurgedAt == null)
+                    : !personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.QuickRequestKind &&
+                        t.RecordId == r.Id)));
         }
         else
         {
-            orders = orders.Where(o =>
+            orders = orders.Where(o => !o.IsDeleted && !o.IsPurgedByAdmin &&
                 (o.Customer.AssignedCoordinatorId == coordinatorId ||
                  (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId))) &&
-                (trash ? o.IsDeletedByCoordinator && !o.IsPurgedByCoordinator : !o.IsDeletedByCoordinator && !o.IsPurgedByCoordinator));
-            quickOrders = quickOrders.Where(r => r.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId) &&
-                (trash ? r.IsDeletedByCoordinator && !r.IsPurgedByCoordinator : !r.IsDeletedByCoordinator && !r.IsPurgedByCoordinator));
+                (trash
+                    ? personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.OrderKind &&
+                        t.RecordId == o.Id && t.PurgedAt == null)
+                    : !personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.OrderKind &&
+                        t.RecordId == o.Id)));
+            quickOrders = quickOrders.Where(r => !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
+                r.Rep != null && r.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId) &&
+                (trash
+                    ? personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.QuickRequestKind &&
+                        t.RecordId == r.Id && t.PurgedAt == null)
+                    : !personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.QuickRequestKind &&
+                        t.RecordId == r.Id)));
         }
 
-        return await FilterAndPageUnifiedAsync(role, orders, quickOrders, filter, trash, ct);
+        return await FilterAndPageUnifiedAsync(role, viewerUserId, orders, quickOrders, filter, trash, ct);
     }
 
     private async Task<PagedResult<UnifiedOrderDto>> FilterAndPageUnifiedAsync(
-        string role, IQueryable<Order> orders, IQueryable<QuickRequest> quickOrders,
+        string role, Guid? viewerUserId, IQueryable<Order> orders, IQueryable<QuickRequest> quickOrders,
         UnifiedOrderFilterRequest filter, bool trash, CancellationToken ct)
     {
         if (!string.IsNullOrWhiteSpace(filter.Search))
@@ -101,7 +122,7 @@ public partial class OrderService
             quickOrders = quickOrders.Where(r => r.CreatedAt < end);
         }
 
-        return await PageUnifiedAsync(role, orders, quickOrders, filter, trash, ct);
+        return await PageUnifiedAsync(role, viewerUserId, orders, quickOrders, filter, trash, ct);
     }
 
     private static void ApplyStatusFilter(string status, ref IQueryable<Order> orders, ref IQueryable<QuickRequest> quickOrders)
@@ -114,9 +135,11 @@ public partial class OrderService
     }
 
     private async Task<PagedResult<UnifiedOrderDto>> PageUnifiedAsync(
-        string role, IQueryable<Order> orders, IQueryable<QuickRequest> quickOrders,
+        string role, Guid? viewerUserId, IQueryable<Order> orders, IQueryable<QuickRequest> quickOrders,
         UnifiedOrderFilterRequest filter, bool trash, CancellationToken ct)
     {
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query().AsNoTracking();
+        var viewerId = viewerUserId ?? Guid.Empty;
         var orderRows = orders.Select(o => new UnifiedOrderIndexRow
         {
             Id = o.Id, Kind = OrderKind, Number = o.OrderNumber,
@@ -125,7 +148,9 @@ public partial class OrderService
             RepName = o.Rep != null ? o.Rep.FullName : null,
             StatusValue = (int)o.Status, Date = o.OrderDate, CreatedAt = o.CreatedAt,
             TotalAmount = o.TotalAmount,
-            DeletedAt = role == AdminTrashRole ? o.DeletedAt : role == RepTrashRole ? o.RepDeletedAt : o.CoordinatorDeletedAt
+            DeletedAt = role == AdminTrashRole ? o.DeletedAt :
+                personalTrash.Where(t => t.UserId == viewerId && t.RecordKind == PersonalRecordTrash.OrderKind &&
+                    t.RecordId == o.Id).Select(t => (DateTime?)t.DeletedAt).FirstOrDefault()
         });
         var quickRows = quickOrders.Select(r => new UnifiedOrderIndexRow
         {
@@ -134,7 +159,9 @@ public partial class OrderService
             CustomerId = null, RepId = r.RepId, RepName = r.Rep != null ? r.Rep.FullName : null,
             StatusValue = (int)r.Status, Date = r.CreatedAt, CreatedAt = r.CreatedAt,
             TotalAmount = null,
-            DeletedAt = role == AdminTrashRole ? r.AdminDeletedAt : role == RepTrashRole ? r.RepDeletedAt : r.CoordinatorDeletedAt
+            DeletedAt = role == AdminTrashRole ? r.AdminDeletedAt :
+                personalTrash.Where(t => t.UserId == viewerId && t.RecordKind == PersonalRecordTrash.QuickRequestKind &&
+                    t.RecordId == r.Id).Select(t => (DateTime?)t.DeletedAt).FirstOrDefault()
         });
         var combined = orderRows.Concat(quickRows);
         var totalCount = await combined.CountAsync(ct);
@@ -194,7 +221,7 @@ public partial class OrderService
     {
         if (row.Kind == OrderKind)
         {
-            var order = MapToDto(orders[row.Id]);
+            var order = MapToDto(orders[row.Id], row.DeletedAt);
             return new UnifiedOrderDto
             {
                 Id = row.Id, Kind = row.Kind, Number = row.Number,
@@ -205,7 +232,7 @@ public partial class OrderService
             };
         }
 
-        var quick = MapQuickOrderToDto(quickOrders[row.Id]);
+        var quick = MapQuickOrderToDto(quickOrders[row.Id], row.DeletedAt);
         return new UnifiedOrderDto
         {
             Id = row.Id, Kind = row.Kind, Number = row.Number,
@@ -216,7 +243,7 @@ public partial class OrderService
         };
     }
 
-    private static QuickRequestDto MapQuickOrderToDto(QuickRequest request)
+    private static QuickRequestDto MapQuickOrderToDto(QuickRequest request, DateTime? deletedAt)
     {
         var legacyImages = request.Images?
             .Select(i => new QuickRequestAttachmentDto
@@ -263,10 +290,7 @@ public partial class OrderService
             Attachments = allAttachments,
             CreatedAt = AsUtc(request.CreatedAt),
             UpdatedAt = AsUtc(request.UpdatedAt),
-            DeletedAt = AsUtc(
-                request.AdminDeletedAt ??
-                request.CoordinatorDeletedAt ??
-                request.RepDeletedAt)
+            DeletedAt = AsUtc(deletedAt)
         };
     }
 

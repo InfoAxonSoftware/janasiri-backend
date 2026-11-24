@@ -14,7 +14,9 @@ services:
       - JwtSettings__Audience=${JWT_AUDIENCE:-DistributionSystemClients}
       - JwtSettings__AccessTokenExpirationMinutes=${JWT_ACCESS_MINUTES:-60}
       - JwtSettings__RefreshTokenExpirationDays=${JWT_REFRESH_DAYS:-7}
-      - DatabaseSettings__AutoMigrateOnStartup=${DB_AUTOMIGRATE:-true}
+      # Destructive/legacy migration review is mandatory before production startup.
+      - DatabaseSettings__AutoMigrateOnStartup=${DB_AUTOMIGRATE:-false}
+      - TrashCleanup__Enabled=${TRASH_CLEANUP_ENABLED:-false}
       - DatabaseSettings__SeedDataOnStartup=${DB_SEED_DATA:-false}
       - DatabaseSettings__SeedSuperAdminOnStartup=${DB_SEED_SUPERADMIN:-true}
       - SuperAdminSeed__Username=${SUPERADMIN_SEED_USERNAME}

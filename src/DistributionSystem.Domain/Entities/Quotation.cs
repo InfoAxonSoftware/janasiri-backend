@@ -28,6 +28,8 @@ public class Quotation : IAuditableEntity
     public bool IsDeleted { get; set; } = false;
     public DateTime? DeletedAt { get; set; }
     public string? DeletedBy { get; set; }
+    public bool IsPurgedByAdmin { get; set; } = false;
+    public DateTime? AdminPurgedAt { get; set; }
 
     // Soft-delete: per-role trash (independent, auto-purge after 7 days)
     public bool IsDeletedByRep { get; set; } = false;

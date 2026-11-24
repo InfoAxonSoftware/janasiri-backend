@@ -73,3 +73,4 @@ src/DistributionSystem.API/wwwroot/uploads/
 # Never track anything under this path.
 src/private/
 src/public/
+/src/DistributionSystem.API/appsettings.Development.json

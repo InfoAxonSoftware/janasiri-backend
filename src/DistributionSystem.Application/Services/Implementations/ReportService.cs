@@ -34,7 +34,11 @@ public class ReportService : IReportService
             .Where(o => o.OrderDate >= monthStart)
             .ToList();
 
-        var pendingOrders = allOrders.Count(o => o.Status == OrderStatus.Pending);
+        // Operational dashboard counts track only records currently visible to Admin.
+        // Financial sales/trend history remains intact even after a global soft delete.
+        var activeOrderCount = allOrders.Count(o => !o.IsDeleted && !o.IsPurgedByAdmin);
+        var pendingOrders = allOrders.Count(o => o.Status == OrderStatus.Pending &&
+            !o.IsDeleted && !o.IsPurgedByAdmin);
         var totalProducts = await _unitOfWork.Repository<Product>().CountAsync(cancellationToken: cancellationToken);
 
         // inventory tracking removed; low stock not supported anymore
@@ -80,7 +84,7 @@ public class ReportService : IReportService
         {
             TotalSalesToday = ordersToday.Sum(o => o.TotalAmount),
             TotalSalesMonth = ordersMonth.Sum(o => o.TotalAmount),
-            TotalOrders = allOrders.Count,            // include all active orders regardless of month
+            TotalOrders = activeOrderCount,         // active, non-cancelled, globally visible Orders
             PendingOrders = pendingOrders,
             TotalProducts = totalProducts,
             LowStockProducts = lowStockProducts,

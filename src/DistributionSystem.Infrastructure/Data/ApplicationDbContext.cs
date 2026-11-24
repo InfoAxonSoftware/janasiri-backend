@@ -55,11 +55,24 @@ public class ApplicationDbContext : DbContext
     public DbSet<QuickRequestImage> QuickRequestImages => Set<QuickRequestImage>();
     public DbSet<QuickRequestAttachment> QuickRequestAttachments => Set<QuickRequestAttachment>();
     public DbSet<RepPayment> RepPayments => Set<RepPayment>();
+    public DbSet<UserRecordTrash> UserRecordTrashes => Set<UserRecordTrash>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(ApplicationDbContext).Assembly);
+
+        // When two API instances restore/purge the same Admin Trash item, stale
+        // state must not overwrite the winner. Apply optimistic concurrency to
+        // both global deletion and final purge flags for all four record types.
+        modelBuilder.Entity<Order>().Property(x => x.IsDeleted).IsConcurrencyToken();
+        modelBuilder.Entity<Order>().Property(x => x.IsPurgedByAdmin).IsConcurrencyToken();
+        modelBuilder.Entity<QuickRequest>().Property(x => x.IsDeletedByAdmin).IsConcurrencyToken();
+        modelBuilder.Entity<QuickRequest>().Property(x => x.IsPurgedByAdmin).IsConcurrencyToken();
+        modelBuilder.Entity<Quotation>().Property(x => x.IsDeleted).IsConcurrencyToken();
+        modelBuilder.Entity<Quotation>().Property(x => x.IsPurgedByAdmin).IsConcurrencyToken();
+        modelBuilder.Entity<RepPayment>().Property(x => x.IsDeletedByAdmin).IsConcurrencyToken();
+        modelBuilder.Entity<RepPayment>().Property(x => x.IsPurgedByAdmin).IsConcurrencyToken();
     }
 
     public override int SaveChanges()
