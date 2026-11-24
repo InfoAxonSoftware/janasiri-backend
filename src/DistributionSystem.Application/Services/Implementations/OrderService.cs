@@ -24,7 +24,7 @@ public partial class OrderService : IOrderService
             .Include(o => o.Customer).ThenInclude(c => c.User)
             .Include(o => o.Rep).ThenInclude(r => r!.User)
             .Include(o => o.OrderItems)
-            .FirstOrDefaultAsync(o => o.Id == id && !o.IsPurgedByAdmin, cancellationToken)
+            .FirstOrDefaultAsync(o => o.Id == id && !o.IsDeleted && !o.IsPurgedByAdmin, cancellationToken)
             ?? throw new NotFoundException("Order", id);
 
         var dto = MapToDto(order);
@@ -40,14 +40,8 @@ public partial class OrderService : IOrderService
             .Include(o => o.OrderItems)
             .AsQueryable();
 
-        // Apply only the current viewer's visibility state.
-        if (filter.RepId.HasValue)
-            query = query.Where(o => !o.IsDeletedByRep && !o.IsPurgedByRep);
-        else if (filter.CustomerId.HasValue)
-            query = query.Where(o => !o.IsDeletedByCustomer);
-        else
-            query = query.Where(o => !o.IsDeleted && !o.IsPurgedByAdmin);
-
+        // An admin deletion is system-wide. Individual role flags are additional filters.
+        query = query.Where(o => !o.IsDeleted && !o.IsPurgedByAdmin);
         if (filter.Status.HasValue)
             query = query.Where(o => o.Status == filter.Status.Value);
         if (filter.CustomerId.HasValue)
@@ -65,7 +59,7 @@ public partial class OrderService : IOrderService
             .Take(filter.PageSize)
             .ToListAsync(cancellationToken);
 
-        var orderDtos = items.Select(MapToDto).ToList();
+        var orderDtos = items.Select(x => MapToDto(x)).ToList();
         await AppendQuotationMetadataAsync(orderDtos, cancellationToken);
 
         return new PagedResult<OrderDto>
@@ -77,17 +71,126 @@ public partial class OrderService : IOrderService
         };
     }
 
+    public async Task<PagedResult<OrderDto>> GetForRepAsync(Guid repUserId, OrderFilterRequest filter, CancellationToken ct = default)
+    {
+        var rep = await _unitOfWork.Repository<SalesRepProfile>().Query()
+            .FirstOrDefaultAsync(r => r.UserId == repUserId, ct)
+            ?? throw new NotFoundException("Sales rep profile", repUserId);
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
+        var query = _unitOfWork.Repository<Order>().Query()
+            .Include(o => o.Customer).ThenInclude(c => c.User)
+            .Include(o => o.Rep).Include(o => o.OrderItems)
+            .Where(o => o.RepId == rep.Id && !o.IsDeleted && !o.IsPurgedByAdmin &&
+                !personalTrash.Any(t => t.UserId == repUserId &&
+                    t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id));
+        if (filter.Status.HasValue) query = query.Where(o => o.Status == filter.Status.Value);
+        if (filter.CustomerId.HasValue) query = query.Where(o => o.CustomerId == filter.CustomerId.Value);
+        if (filter.FromDate.HasValue) query = query.Where(o => o.OrderDate >= filter.FromDate.Value);
+        if (filter.ToDate.HasValue) query = query.Where(o => o.OrderDate <= filter.ToDate.Value);
+        var total = await query.CountAsync(ct);
+        var items = await query.OrderByDescending(o => o.OrderDate)
+            .Skip((filter.Page - 1) * filter.PageSize).Take(filter.PageSize).ToListAsync(ct);
+        var dtos = items.Select(x => MapToDto(x)).ToList();
+        await AppendQuotationMetadataAsync(dtos, ct);
+        return new PagedResult<OrderDto> { Items = dtos, TotalCount = total, Page = filter.Page, PageSize = filter.PageSize };
+    }
+
+    public async Task<PagedResult<OrderDto>> GetForCustomerAsync(Guid customerUserId, OrderFilterRequest filter, CancellationToken ct = default)
+    {
+        var customer = await _unitOfWork.Repository<CustomerProfile>().Query()
+            .FirstOrDefaultAsync(c => c.UserId == customerUserId, ct)
+            ?? throw new NotFoundException("Customer profile", customerUserId);
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
+        var query = _unitOfWork.Repository<Order>().Query()
+            .Include(o => o.Customer).ThenInclude(c => c.User)
+            .Include(o => o.Rep).Include(o => o.OrderItems)
+            .Where(o => o.CustomerId == customer.Id && !o.IsDeleted && !o.IsPurgedByAdmin &&
+                !personalTrash.Any(t => t.UserId == customerUserId &&
+                    t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id));
+        if (filter.Status.HasValue) query = query.Where(o => o.Status == filter.Status.Value);
+        if (filter.RepId.HasValue) query = query.Where(o => o.RepId == filter.RepId.Value);
+        if (filter.FromDate.HasValue) query = query.Where(o => o.OrderDate >= filter.FromDate.Value);
+        if (filter.ToDate.HasValue) query = query.Where(o => o.OrderDate <= filter.ToDate.Value);
+        var total = await query.CountAsync(ct);
+        var items = await query.OrderByDescending(o => o.OrderDate)
+            .Skip((filter.Page - 1) * filter.PageSize).Take(filter.PageSize).ToListAsync(ct);
+        var dtos = items.Select(x => MapToDto(x)).ToList();
+        await AppendQuotationMetadataAsync(dtos, ct);
+        return new PagedResult<OrderDto> { Items = dtos, TotalCount = total, Page = filter.Page, PageSize = filter.PageSize };
+    }
+
+    public async Task<OrderDto> RepGetByIdAsync(Guid id, Guid repUserId, CancellationToken ct = default)
+    {
+        var rep = await _unitOfWork.Repository<SalesRepProfile>().Query()
+            .FirstOrDefaultAsync(r => r.UserId == repUserId, ct)
+            ?? throw new NotFoundException("Sales rep profile", repUserId);
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
+        var order = await _unitOfWork.Repository<Order>().Query()
+            .Include(o => o.Customer).ThenInclude(c => c.User)
+            .Include(o => o.Rep).ThenInclude(r => r!.User).Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == id && o.RepId == rep.Id && !o.IsDeleted && !o.IsPurgedByAdmin &&
+                !personalTrash.Any(t => t.UserId == repUserId &&
+                    t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id), ct)
+            ?? throw new NotFoundException("Order", id);
+        var dto = MapToDto(order);
+        await AppendQuotationMetadataAsync([dto], ct);
+        return dto;
+    }
+
+    public async Task<OrderDto> CustomerGetByIdAsync(Guid id, Guid customerUserId, CancellationToken ct = default)
+    {
+        var customer = await _unitOfWork.Repository<CustomerProfile>().Query()
+            .FirstOrDefaultAsync(c => c.UserId == customerUserId, ct)
+            ?? throw new NotFoundException("Customer profile", customerUserId);
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
+        var order = await _unitOfWork.Repository<Order>().Query()
+            .Include(o => o.Customer).ThenInclude(c => c.User)
+            .Include(o => o.Rep).ThenInclude(r => r!.User).Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == id && o.CustomerId == customer.Id && !o.IsDeleted && !o.IsPurgedByAdmin &&
+                !personalTrash.Any(t => t.UserId == customerUserId &&
+                    t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id), ct)
+            ?? throw new NotFoundException("Order", id);
+        var dto = MapToDto(order);
+        await AppendQuotationMetadataAsync([dto], ct);
+        return dto;
+    }
+
+    public async Task<OrderDto> CoordinatorGetByIdAsync(Guid id, Guid coordinatorUserId, CancellationToken ct = default)
+    {
+        var coordinator = await _unitOfWork.Repository<CoordinatorProfile>().Query()
+            .FirstOrDefaultAsync(c => c.UserId == coordinatorUserId, ct)
+            ?? throw new NotFoundException("Coordinator profile", coordinatorUserId);
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
+        var order = await _unitOfWork.Repository<Order>().Query()
+            .Include(o => o.Customer).ThenInclude(c => c.User)
+            .Include(o => o.Rep).ThenInclude(r => r!.User)
+            .Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == id && !o.IsDeleted && !o.IsPurgedByAdmin &&
+                !personalTrash.Any(t => t.UserId == coordinatorUserId &&
+                    t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id) &&
+                (o.Customer.AssignedCoordinatorId == coordinator.Id ||
+                 (o.RepId.HasValue && o.Rep != null &&
+                  o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinator.Id))), ct)
+            ?? throw new NotFoundException("Order", id);
+        var dto = MapToDto(order);
+        await AppendQuotationMetadataAsync([dto], ct);
+        return dto;
+    }
+
     public async Task<PagedResult<OrderDto>> GetForCoordinatorAsync(Guid coordinatorUserId, OrderFilterRequest filter, CancellationToken cancellationToken = default)
     {
         var coordinator = await _unitOfWork.Repository<CoordinatorProfile>().Query()
             .FirstOrDefaultAsync(c => c.UserId == coordinatorUserId, cancellationToken)
             ?? throw new NotFoundException("Coordinator profile", coordinatorUserId);
 
+        var privateTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var query = _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).ThenInclude(c => c.User)
             .Include(o => o.Rep)
             .Include(o => o.OrderItems)
-            .Where(o => !o.IsDeletedByCoordinator && !o.IsPurgedByCoordinator &&
+            .Where(o => !o.IsDeleted && !o.IsPurgedByAdmin &&
+                        !privateTrash.Any(t => t.UserId == coordinatorUserId &&
+                               t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id) &&
                         (o.Customer.AssignedCoordinatorId == coordinator.Id
                         || (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinator.Id))))
             .AsQueryable();
@@ -109,7 +212,7 @@ public partial class OrderService : IOrderService
             .Take(filter.PageSize)
             .ToListAsync(cancellationToken);
 
-        var orderDtos = items.Select(MapToDto).ToList();
+        var orderDtos = items.Select(x => MapToDto(x)).ToList();
         await AppendQuotationMetadataAsync(orderDtos, cancellationToken);
 
         return new PagedResult<OrderDto>
@@ -261,11 +364,12 @@ public partial class OrderService : IOrderService
         return await GetByIdAsync(id, cancellationToken);
     }
 
-    public async Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
+    public Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        var order = await GetOrderEntity(id, cancellationToken);
-        _unitOfWork.Repository<Order>().Remove(order);
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        // Physical deletion bypasses the Admin Trash retention and audit safeguards.
+        throw new BusinessException(
+            "Physical order deletion is disabled. Use the Admin Trash workflow.",
+            "ORDER_HARD_DELETE_DISABLED");
     }
 
     public async Task AdminSoftDeleteAsync(Guid id, string deletedBy, CancellationToken cancellationToken = default)
@@ -294,7 +398,7 @@ public partial class OrderService : IOrderService
 
         return new PagedResult<OrderDto>
         {
-            Items = items.Select(MapToDto).ToList(),
+            Items = items.Select(x => MapToDto(x)).ToList(),
             TotalCount = totalCount,
             Page = page,
             PageSize = pageSize
@@ -322,12 +426,12 @@ public partial class OrderService : IOrderService
             ?? throw new NotFoundException("Sales rep profile", repUserId);
 
         var order = await _unitOfWork.Repository<Order>().Query()
-            .FirstOrDefaultAsync(o => o.Id == id && o.RepId == repProfile.Id && !o.IsPurgedByRep, cancellationToken)
+            .FirstOrDefaultAsync(o => o.Id == id && o.RepId == repProfile.Id &&
+                !o.IsDeleted && !o.IsPurgedByAdmin, cancellationToken)
             ?? throw new NotFoundException("Order", id);
 
-        order.IsDeletedByRep = true;
-        order.RepDeletedAt = DateTime.UtcNow;
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        await new PersonalRecordTrash(_unitOfWork).HideAsync(
+            repUserId, PersonalRecordTrash.OrderKind, id, cancellationToken);
     }
 
     public async Task<PagedResult<OrderDto>> RepGetTrashAsync(Guid repUserId, int page, int pageSize, CancellationToken cancellationToken = default)
@@ -336,16 +440,24 @@ public partial class OrderService : IOrderService
             .FirstOrDefaultAsync(r => r.UserId == repUserId, cancellationToken)
             ?? throw new NotFoundException("Sales rep profile", repUserId);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var query = _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).ThenInclude(c => c.User)
             .Include(o => o.Rep).Include(o => o.OrderItems)
-            .Where(o => o.RepId == repProfile.Id && o.IsDeletedByRep && !o.IsPurgedByRep);
+            .Where(o => o.RepId == repProfile.Id && !o.IsDeleted && !o.IsPurgedByAdmin &&
+                personalTrash.Any(t => t.UserId == repUserId &&
+                    t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id && t.PurgedAt == null));
 
         var totalCount = await query.CountAsync(cancellationToken);
-        var items = await query.OrderByDescending(o => o.RepDeletedAt)
+        var items = await query.OrderByDescending(o => personalTrash.Where(t => t.UserId == repUserId &&
+                t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id)
+                .Select(t => t.DeletedAt).FirstOrDefault())
             .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
 
-        var dtos = items.Select(MapToDto).ToList();
+        var deletionDates = await personalTrash.Where(t => t.UserId == repUserId &&
+                t.RecordKind == PersonalRecordTrash.OrderKind && items.Select(o => o.Id).Contains(t.RecordId))
+            .ToDictionaryAsync(t => t.RecordId, t => t.DeletedAt, cancellationToken);
+        var dtos = items.Select(o => MapToDto(o, deletionDates.GetValueOrDefault(o.Id))).ToList();
         return new PagedResult<OrderDto> { Items = dtos, TotalCount = totalCount, Page = page, PageSize = pageSize };
     }
 
@@ -355,13 +467,16 @@ public partial class OrderService : IOrderService
             .FirstOrDefaultAsync(r => r.UserId == repUserId, cancellationToken)
             ?? throw new NotFoundException("Sales rep profile", repUserId);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var order = await _unitOfWork.Repository<Order>().Query()
-            .FirstOrDefaultAsync(o => o.Id == id && o.RepId == repProfile.Id && o.IsDeletedByRep && !o.IsPurgedByRep, cancellationToken)
+            .FirstOrDefaultAsync(o => o.Id == id && o.RepId == repProfile.Id &&
+                !o.IsDeleted && !o.IsPurgedByAdmin &&
+                personalTrash.Any(t => t.UserId == repUserId && t.RecordKind == PersonalRecordTrash.OrderKind &&
+                    t.RecordId == o.Id && t.PurgedAt == null), cancellationToken)
             ?? throw new NotFoundException("Order", id);
 
-        order.IsDeletedByRep = false;
-        order.RepDeletedAt = null;
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        await new PersonalRecordTrash(_unitOfWork).RestoreAsync(
+            repUserId, PersonalRecordTrash.OrderKind, id, cancellationToken);
     }
 
     // ── Coordinator trash ─────────────────────────────────────────────────
@@ -375,15 +490,14 @@ public partial class OrderService : IOrderService
         // Coordinator can only delete orders visible to them
         var order = await _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).Include(o => o.Rep).ThenInclude(r => r!.Coordinators)
-            .FirstOrDefaultAsync(o => o.Id == id && !o.IsPurgedByCoordinator &&
+            .FirstOrDefaultAsync(o => o.Id == id && !o.IsDeleted && !o.IsPurgedByAdmin &&
                 (o.Customer.AssignedCoordinatorId == coord.Id ||
                  (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coord.Id))),
                 cancellationToken)
             ?? throw new NotFoundException("Order", id);
 
-        order.IsDeletedByCoordinator = true;
-        order.CoordinatorDeletedAt = DateTime.UtcNow;
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        await new PersonalRecordTrash(_unitOfWork).HideAsync(
+            coordinatorUserId, PersonalRecordTrash.OrderKind, id, cancellationToken);
     }
 
     public async Task<PagedResult<OrderDto>> CoordinatorGetTrashAsync(Guid coordinatorUserId, int page, int pageSize, CancellationToken cancellationToken = default)
@@ -392,19 +506,27 @@ public partial class OrderService : IOrderService
             .FirstOrDefaultAsync(c => c.UserId == coordinatorUserId, cancellationToken)
             ?? throw new NotFoundException("Coordinator profile", coordinatorUserId);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var query = _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).ThenInclude(c => c.User)
             .Include(o => o.Rep).ThenInclude(r => r!.Coordinators)
             .Include(o => o.OrderItems)
-            .Where(o => o.IsDeletedByCoordinator && !o.IsPurgedByCoordinator &&
+            .Where(o => !o.IsDeleted && !o.IsPurgedByAdmin &&
+                personalTrash.Any(t => t.UserId == coordinatorUserId &&
+                    t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id && t.PurgedAt == null) &&
                 (o.Customer.AssignedCoordinatorId == coord.Id ||
                  (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coord.Id))));
 
         var totalCount = await query.CountAsync(cancellationToken);
-        var items = await query.OrderByDescending(o => o.CoordinatorDeletedAt)
+        var items = await query.OrderByDescending(o => personalTrash.Where(t => t.UserId == coordinatorUserId &&
+                t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id)
+                .Select(t => t.DeletedAt).FirstOrDefault())
             .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
 
-        var dtos = items.Select(MapToDto).ToList();
+        var deletionDates = await personalTrash.Where(t => t.UserId == coordinatorUserId &&
+                t.RecordKind == PersonalRecordTrash.OrderKind && items.Select(o => o.Id).Contains(t.RecordId))
+            .ToDictionaryAsync(t => t.RecordId, t => t.DeletedAt, cancellationToken);
+        var dtos = items.Select(o => MapToDto(o, deletionDates.GetValueOrDefault(o.Id))).ToList();
         return new PagedResult<OrderDto> { Items = dtos, TotalCount = totalCount, Page = page, PageSize = pageSize };
     }
 
@@ -414,17 +536,19 @@ public partial class OrderService : IOrderService
             .FirstOrDefaultAsync(c => c.UserId == coordinatorUserId, cancellationToken)
             ?? throw new NotFoundException("Coordinator profile", coordinatorUserId);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var order = await _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).Include(o => o.Rep).ThenInclude(r => r!.Coordinators)
-            .FirstOrDefaultAsync(o => o.Id == id && o.IsDeletedByCoordinator && !o.IsPurgedByCoordinator &&
+            .FirstOrDefaultAsync(o => o.Id == id && !o.IsDeleted && !o.IsPurgedByAdmin &&
+                personalTrash.Any(t => t.UserId == coordinatorUserId &&
+                    t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id && t.PurgedAt == null) &&
                 (o.Customer.AssignedCoordinatorId == coord.Id ||
                  (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coord.Id))),
                 cancellationToken)
             ?? throw new NotFoundException("Order", id);
 
-        order.IsDeletedByCoordinator = false;
-        order.CoordinatorDeletedAt = null;
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        await new PersonalRecordTrash(_unitOfWork).RestoreAsync(
+            coordinatorUserId, PersonalRecordTrash.OrderKind, id, cancellationToken);
     }
 
     // ── Customer trash ────────────────────────────────────────────────────
@@ -436,12 +560,12 @@ public partial class OrderService : IOrderService
             ?? throw new NotFoundException("Customer profile", customerUserId);
 
         var order = await _unitOfWork.Repository<Order>().Query()
-            .FirstOrDefaultAsync(o => o.Id == id && o.CustomerId == customer.Id, cancellationToken)
+            .FirstOrDefaultAsync(o => o.Id == id && o.CustomerId == customer.Id &&
+                !o.IsDeleted && !o.IsPurgedByAdmin, cancellationToken)
             ?? throw new NotFoundException("Order", id);
 
-        order.IsDeletedByCustomer = true;
-        order.CustomerDeletedAt = DateTime.UtcNow;
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        await new PersonalRecordTrash(_unitOfWork).HideAsync(
+            customerUserId, PersonalRecordTrash.OrderKind, id, cancellationToken);
     }
 
     public async Task<PagedResult<OrderDto>> CustomerGetTrashAsync(Guid customerUserId, int page, int pageSize, CancellationToken cancellationToken = default)
@@ -450,16 +574,24 @@ public partial class OrderService : IOrderService
             .FirstOrDefaultAsync(c => c.UserId == customerUserId, cancellationToken)
             ?? throw new NotFoundException("Customer profile", customerUserId);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var query = _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).ThenInclude(c => c.User)
             .Include(o => o.Rep).Include(o => o.OrderItems)
-            .Where(o => o.CustomerId == customer.Id && o.IsDeletedByCustomer);
+            .Where(o => o.CustomerId == customer.Id && !o.IsDeleted && !o.IsPurgedByAdmin &&
+                personalTrash.Any(t => t.UserId == customerUserId &&
+                    t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id && t.PurgedAt == null));
 
         var totalCount = await query.CountAsync(cancellationToken);
-        var items = await query.OrderByDescending(o => o.CustomerDeletedAt)
+        var items = await query.OrderByDescending(o => personalTrash.Where(t => t.UserId == customerUserId &&
+                t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id)
+                .Select(t => t.DeletedAt).FirstOrDefault())
             .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
 
-        var dtos = items.Select(MapToDto).ToList();
+        var deletionDates = await personalTrash.Where(t => t.UserId == customerUserId &&
+                t.RecordKind == PersonalRecordTrash.OrderKind && items.Select(o => o.Id).Contains(t.RecordId))
+            .ToDictionaryAsync(t => t.RecordId, t => t.DeletedAt, cancellationToken);
+        var dtos = items.Select(o => MapToDto(o, deletionDates.GetValueOrDefault(o.Id))).ToList();
         return new PagedResult<OrderDto> { Items = dtos, TotalCount = totalCount, Page = page, PageSize = pageSize };
     }
 
@@ -469,13 +601,69 @@ public partial class OrderService : IOrderService
             .FirstOrDefaultAsync(c => c.UserId == customerUserId, cancellationToken)
             ?? throw new NotFoundException("Customer profile", customerUserId);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var order = await _unitOfWork.Repository<Order>().Query()
-            .FirstOrDefaultAsync(o => o.Id == id && o.CustomerId == customer.Id, cancellationToken)
+            .FirstOrDefaultAsync(o => o.Id == id && o.CustomerId == customer.Id &&
+                !o.IsDeleted && !o.IsPurgedByAdmin &&
+                personalTrash.Any(t => t.UserId == customerUserId && t.RecordKind == PersonalRecordTrash.OrderKind &&
+                    t.RecordId == o.Id && t.PurgedAt == null), cancellationToken)
             ?? throw new NotFoundException("Order", id);
 
-        order.IsDeletedByCustomer = false;
-        order.CustomerDeletedAt = null;
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        await new PersonalRecordTrash(_unitOfWork).RestoreAsync(
+            customerUserId, PersonalRecordTrash.OrderKind, id, cancellationToken);
+    }
+
+    public async Task CustomerPurgeAsync(Guid id, Guid customerUserId, CancellationToken ct = default)
+    {
+        var customer = await _unitOfWork.Repository<CustomerProfile>().Query()
+            .FirstOrDefaultAsync(c => c.UserId == customerUserId, ct)
+            ?? throw new NotFoundException("Customer profile", customerUserId);
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
+        var allowed = await _unitOfWork.Repository<Order>().Query().AnyAsync(o =>
+            o.Id == id && o.CustomerId == customer.Id && !o.IsDeleted && !o.IsPurgedByAdmin &&
+            personalTrash.Any(t => t.UserId == customerUserId &&
+                t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id && t.PurgedAt == null), ct);
+        if (!allowed) throw new NotFoundException("Trash entry", id);
+        await new PersonalRecordTrash(_unitOfWork).PermanentlyHideAsync(
+            customerUserId, PersonalRecordTrash.OrderKind, id, ct);
+    }
+
+    public async Task<OrderDto> CustomerCancelAsync(Guid id, Guid customerUserId, string reason, CancellationToken ct = default)
+    {
+        var customer = await _unitOfWork.Repository<CustomerProfile>().Query()
+            .FirstOrDefaultAsync(c => c.UserId == customerUserId, ct)
+            ?? throw new NotFoundException("Customer profile", customerUserId);
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
+        var order = await _unitOfWork.Repository<Order>().Query().Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == id && o.CustomerId == customer.Id &&
+                !o.IsDeleted && !o.IsPurgedByAdmin &&
+                !personalTrash.Any(t => t.UserId == customerUserId &&
+                    t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id), ct)
+            ?? throw new NotFoundException("Order", id);
+        if (order.Status is OrderStatus.Dispatched or OrderStatus.Delivered or OrderStatus.Completed)
+            throw new BusinessException("Cannot cancel an order that has been dispatched or delivered", "ORDER_CANNOT_CANCEL");
+        order.Status = OrderStatus.Cancelled;
+        order.CancellationReason = reason;
+        await _unitOfWork.SaveChangesAsync(ct);
+        return await GetByIdAsync(id, ct);
+    }
+
+    public async Task<OrderDto> CustomerRateOrderAsync(Guid id, Guid customerUserId, RateOrderRequest request, CancellationToken ct = default)
+    {
+        var customer = await _unitOfWork.Repository<CustomerProfile>().Query()
+            .FirstOrDefaultAsync(c => c.UserId == customerUserId, ct)
+            ?? throw new NotFoundException("Customer profile", customerUserId);
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
+        var order = await _unitOfWork.Repository<Order>().Query().Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == id && o.CustomerId == customer.Id &&
+                !o.IsDeleted && !o.IsPurgedByAdmin &&
+                !personalTrash.Any(t => t.UserId == customerUserId &&
+                    t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id), ct)
+            ?? throw new NotFoundException("Order", id);
+        order.Rating = request.Rating;
+        order.RatingComment = request.Comment;
+        await _unitOfWork.SaveChangesAsync(ct);
+        return await GetByIdAsync(id, ct);
     }
 
     public async Task<OrderDto> CancelAsync(Guid id, string reason, CancellationToken cancellationToken = default)
@@ -526,16 +714,23 @@ public partial class OrderService : IOrderService
         return await GetAllAsync(new OrderFilterRequest { CustomerId = customerId, Page = page, PageSize = pageSize }, cancellationToken);
     }
 
-    public async Task<OrderDto> ReorderAsync(Guid orderId, Guid customerId, CancellationToken cancellationToken = default)
+    public async Task<OrderDto> ReorderAsync(Guid orderId, Guid customerUserId, CancellationToken cancellationToken = default)
     {
+        var customer = await _unitOfWork.Repository<CustomerProfile>().Query()
+            .FirstOrDefaultAsync(c => c.UserId == customerUserId, cancellationToken)
+            ?? throw new NotFoundException("Customer profile", customerUserId);
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var originalOrder = await _unitOfWork.Repository<Order>().Query()
             .Include(o => o.OrderItems)
-            .FirstOrDefaultAsync(o => o.Id == orderId, cancellationToken)
+            .FirstOrDefaultAsync(o => o.Id == orderId && o.CustomerId == customer.Id &&
+                !o.IsDeleted && !o.IsPurgedByAdmin &&
+                !personalTrash.Any(t => t.UserId == customerUserId &&
+                    t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id), cancellationToken)
             ?? throw new NotFoundException("Order", orderId);
 
         var request = new CreateOrderRequest
         {
-            CustomerId = customerId,
+            CustomerId = customer.Id,
             DeliveryAddress = originalOrder.DeliveryAddress,
             Items = originalOrder.OrderItems
                 .Where(oi => oi.ProductId.HasValue)
@@ -554,7 +749,7 @@ public partial class OrderService : IOrderService
     {
         return await _unitOfWork.Repository<Order>().Query()
             .Include(o => o.OrderItems)
-            .FirstOrDefaultAsync(o => o.Id == id, cancellationToken)
+            .FirstOrDefaultAsync(o => o.Id == id && !o.IsDeleted && !o.IsPurgedByAdmin, cancellationToken)
             ?? throw new NotFoundException("Order", id);
     }
 
@@ -584,7 +779,7 @@ public partial class OrderService : IOrderService
 
     private static DateTime? AsUtc(DateTime? value) => value.HasValue ? AsUtc(value.Value) : null;
 
-    private static OrderDto MapToDto(Order o) => new()
+    private static OrderDto MapToDto(Order o, DateTime? personalDeletedAt = null) => new()
     {
         Id = o.Id,
         OrderNumber = o.OrderNumber,
@@ -605,7 +800,7 @@ public partial class OrderService : IOrderService
         DeliveryNotes = o.DeliveryNotes,
         Rating = o.Rating,
         IsDeleted = o.IsDeleted,
-        DeletedAt = AsUtc(o.DeletedAt),
+        DeletedAt = AsUtc(personalDeletedAt ?? o.DeletedAt),
         Items = o.OrderItems?.Select(oi => new OrderItemDto
         {
             Id = oi.Id,

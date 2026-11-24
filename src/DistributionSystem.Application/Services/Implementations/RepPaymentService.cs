@@ -199,13 +199,22 @@ public class RepPaymentService : IRepPaymentService
             .AsNoTracking()
             .FirstOrDefaultAsync(r => r.UserId == repUserId, ct)
             ?? throw new NotFoundException("Sales rep profile", repUserId);
+        var personalTrash = _uow.Repository<UserRecordTrash>().Query();
 
         var query = _uow.Repository<RepPayment>().Query()
             .AsNoTracking()
             .Include(p => p.Rep)
-            .Where(p => p.RepId == rep.Id && p.IsDeletedBySalesRep == trash);
+            .Where(p => p.RepId == rep.Id && !p.IsDeletedByAdmin && !p.IsPurgedByAdmin &&
+                (trash
+                    ? personalTrash.Any(t => t.UserId == repUserId &&
+                        t.RecordKind == PersonalRecordTrash.RepPaymentKind &&
+                        t.RecordId == p.Id && t.PurgedAt == null)
+                    : !personalTrash.Any(t => t.UserId == repUserId &&
+                        t.RecordKind == PersonalRecordTrash.RepPaymentKind && t.RecordId == p.Id)));
 
-        return await ExecutePagedQueryAsync(query, filter, ct);
+        var result = await ExecutePagedQueryAsync(query, filter, ct);
+        if (trash) await ApplyPersonalDeletedAtAsync(result, repUserId, ct);
+        return result;
     }
 
     // Backward-compatible list overload for existing tests/callers.
@@ -234,18 +243,24 @@ public class RepPaymentService : IRepPaymentService
         return items;
     }
 
-    public async Task<RepPaymentDto> GetForRepByIdAsync(Guid id, Guid repUserId, CancellationToken ct = default)
+    public async Task<RepPaymentDto> GetForRepByIdAsync(Guid id, Guid repUserId, CancellationToken ct = default, bool includePersonalTrash = false)
     {
         var rep = await _uow.Repository<SalesRepProfile>().Query()
             .FirstOrDefaultAsync(r => r.UserId == repUserId, ct)
             ?? throw new NotFoundException("Sales rep profile", repUserId);
+        var personalTrash = _uow.Repository<UserRecordTrash>().Query();
 
         var payment = await _uow.Repository<RepPayment>().Query()
             .Include(p => p.Rep)
-            .FirstOrDefaultAsync(p => p.Id == id && p.RepId == rep.Id, ct)
+            .FirstOrDefaultAsync(p => p.Id == id && p.RepId == rep.Id &&
+                !p.IsDeletedByAdmin && !p.IsPurgedByAdmin &&
+                !personalTrash.Any(t => t.UserId == repUserId &&
+                    t.RecordKind == PersonalRecordTrash.RepPaymentKind && t.RecordId == p.Id &&
+                    (!includePersonalTrash || t.PurgedAt != null)), ct)
             ?? throw new NotFoundException("Payment report", id);
 
-        return MapToDto(payment, payment.Rep?.FullName ?? string.Empty, await GetCoordinatorNameAsync(payment.RepId, ct));
+        return MapToDto(payment, payment.Rep?.FullName ?? string.Empty,
+            await GetCoordinatorNameAsync(payment.RepId, ct));
     }
 
     /// <summary>Resolves the evidence storage key for a payment already confirmed to be in scope by the caller (role-appropriate GetById* method). Returns null if the request has no evidence image.</summary>
@@ -260,17 +275,8 @@ public class RepPaymentService : IRepPaymentService
 
     public async Task DeleteRepAsync(Guid id, Guid repUserId, CancellationToken ct = default)
     {
-        var rep = await _uow.Repository<SalesRepProfile>().Query()
-            .FirstOrDefaultAsync(r => r.UserId == repUserId, ct)
-            ?? throw new NotFoundException("Sales rep profile", repUserId);
-
-        var payment = await _uow.Repository<RepPayment>().Query()
-            .FirstOrDefaultAsync(p => p.Id == id && p.RepId == rep.Id, ct)
-            ?? throw new NotFoundException("Payment report", id);
-
-        DeleteImageFile(payment.ImageUrl);
-        _uow.Repository<RepPayment>().Remove(payment);
-        await _uow.SaveChangesAsync(ct);
+        // Backward-compatible DELETE route now moves the report to private Trash.
+        await RepTrashAsync(id, repUserId, ct);
     }
 
     public async Task RepTrashAsync(Guid id, Guid repUserId, CancellationToken ct = default)
@@ -278,14 +284,13 @@ public class RepPaymentService : IRepPaymentService
         var rep = await _uow.Repository<SalesRepProfile>().Query()
             .FirstOrDefaultAsync(r => r.UserId == repUserId, ct)
             ?? throw new NotFoundException("Sales rep profile", repUserId);
-
         var payment = await _uow.Repository<RepPayment>().Query()
-            .FirstOrDefaultAsync(p => p.Id == id && p.RepId == rep.Id, ct)
+            .FirstOrDefaultAsync(p => p.Id == id && p.RepId == rep.Id &&
+                !p.IsDeletedByAdmin && !p.IsPurgedByAdmin, ct)
             ?? throw new NotFoundException("Payment report", id);
 
-        payment.IsDeletedBySalesRep = true;
-        payment.SalesRepDeletedAt = DateTime.UtcNow;
-        await _uow.SaveChangesAsync(ct);
+        await new PersonalRecordTrash(_uow).HideAsync(
+            repUserId, PersonalRecordTrash.RepPaymentKind, payment.Id, ct);
     }
 
     public async Task RepRestoreAsync(Guid id, Guid repUserId, CancellationToken ct = default)
@@ -293,14 +298,25 @@ public class RepPaymentService : IRepPaymentService
         var rep = await _uow.Repository<SalesRepProfile>().Query()
             .FirstOrDefaultAsync(r => r.UserId == repUserId, ct)
             ?? throw new NotFoundException("Sales rep profile", repUserId);
+        var exists = await _uow.Repository<RepPayment>().Query()
+            .AnyAsync(p => p.Id == id && p.RepId == rep.Id, ct);
+        if (!exists) throw new NotFoundException("Payment report", id);
 
-        var payment = await _uow.Repository<RepPayment>().Query()
-            .FirstOrDefaultAsync(p => p.Id == id && p.RepId == rep.Id, ct)
-            ?? throw new NotFoundException("Payment report", id);
+        await new PersonalRecordTrash(_uow).RestoreAsync(
+            repUserId, PersonalRecordTrash.RepPaymentKind, id, ct);
+    }
 
-        payment.IsDeletedBySalesRep = false;
-        payment.SalesRepDeletedAt = null;
-        await _uow.SaveChangesAsync(ct);
+    public async Task RepPurgeAsync(Guid id, Guid repUserId, CancellationToken ct = default)
+    {
+        var rep = await _uow.Repository<SalesRepProfile>().Query()
+            .FirstOrDefaultAsync(r => r.UserId == repUserId, ct)
+            ?? throw new NotFoundException("Sales rep profile", repUserId);
+        var exists = await _uow.Repository<RepPayment>().Query()
+            .AnyAsync(p => p.Id == id && p.RepId == rep.Id, ct);
+        if (!exists) throw new NotFoundException("Payment report", id);
+
+        await new PersonalRecordTrash(_uow).PermanentlyHideAsync(
+            repUserId, PersonalRecordTrash.RepPaymentKind, id, ct);
     }
 
     // ── Admin ─────────────────────────────────────────────────────────────────
@@ -313,7 +329,7 @@ public class RepPaymentService : IRepPaymentService
         var query = _uow.Repository<RepPayment>().Query()
             .AsNoTracking()
             .Include(p => p.Rep)
-            .Where(p => p.IsDeletedByAdmin == trash);
+            .Where(p => p.IsDeletedByAdmin == trash && !p.IsPurgedByAdmin);
 
         return await ExecutePagedQueryAsync(query, filter, ct);
     }
@@ -357,7 +373,7 @@ public class RepPaymentService : IRepPaymentService
     {
         return await _uow.Repository<RepPayment>().Query()
             .AsNoTracking()
-            .Where(p => !p.IsDeletedByAdmin)
+            .Where(p => !p.IsDeletedByAdmin && !p.IsPurgedByAdmin)
             .Select(p => new RepPaymentRepOptionDto
             {
                 Id = p.RepId,
@@ -368,11 +384,12 @@ public class RepPaymentService : IRepPaymentService
             .ToListAsync(ct);
     }
 
-    public async Task<RepPaymentDto> GetByIdForAdminAsync(Guid id, CancellationToken ct = default)
+    public async Task<RepPaymentDto> GetByIdForAdminAsync(Guid id, CancellationToken ct = default, bool includeAdminTrash = false)
     {
         var payment = await _uow.Repository<RepPayment>().Query()
             .Include(p => p.Rep)
-            .FirstOrDefaultAsync(p => p.Id == id, ct)
+            .FirstOrDefaultAsync(p => p.Id == id && !p.IsPurgedByAdmin &&
+                (!p.IsDeletedByAdmin || includeAdminTrash), ct)
             ?? throw new NotFoundException("Payment report", id);
 
         return MapToDto(payment, payment.Rep?.FullName ?? string.Empty, await GetCoordinatorNameAsync(payment.RepId, ct));
@@ -382,19 +399,17 @@ public class RepPaymentService : IRepPaymentService
     {
         var payment = await _uow.Repository<RepPayment>().Query()
             .Include(p => p.Rep)
-            .FirstOrDefaultAsync(p => p.Id == id, ct)
+            .FirstOrDefaultAsync(p => p.Id == id && !p.IsDeletedByAdmin && !p.IsPurgedByAdmin, ct)
             ?? throw new NotFoundException("Payment report", id);
 
         if (!Enum.TryParse<RepPaymentStatus>(dto.Status, ignoreCase: true, out var newStatus))
             throw new ArgumentException($"Invalid status '{dto.Status}'.");
 
         var oldStatus = payment.Status;
-
         payment.Status = newStatus;
         payment.AdminNotes = dto.AdminNotes;
         payment.UpdatedAt = DateTime.UtcNow;
         payment.UpdatedBy = updatedBy;
-
         await _uow.SaveChangesAsync(ct);
 
         if (oldStatus != newStatus)
@@ -402,19 +417,12 @@ public class RepPaymentService : IRepPaymentService
             var repUserId = payment.Rep?.UserId ?? Guid.Empty;
             var coordUserIds = await GetAssignedCoordinatorUserIdsAsync(payment.RepId, ct);
             Guid? coordinatorUserId = coordUserIds.Count > 0 ? coordUserIds[0] : null;
-
-            await NotifyStatusChangeAsync(
-                payment,
-                repUserId,
-                oldStatus,
-                newStatus,
-                updatedBy,
-                coordinatorUserId,
-                notifyCoordinator: true,
-                ct: ct);
+            await NotifyStatusChangeAsync(payment, repUserId, oldStatus, newStatus, updatedBy,
+                coordinatorUserId, notifyCoordinator: true, ct: ct);
         }
 
-        return MapToDto(payment, payment.Rep?.FullName ?? string.Empty, await GetCoordinatorNameAsync(payment.RepId, ct));
+        return MapToDto(payment, payment.Rep?.FullName ?? string.Empty,
+            await GetCoordinatorNameAsync(payment.RepId, ct));
     }
 
     private async Task NotifyStatusChangeAsync(
@@ -576,7 +584,7 @@ public class RepPaymentService : IRepPaymentService
     public async Task AdminSoftDeleteAsync(Guid id, string deletedBy, CancellationToken ct = default)
     {
         var payment = await _uow.Repository<RepPayment>().Query()
-            .FirstOrDefaultAsync(p => p.Id == id, ct)
+            .FirstOrDefaultAsync(p => p.Id == id && !p.IsDeletedByAdmin && !p.IsPurgedByAdmin, ct)
             ?? throw new NotFoundException("Payment report", id);
 
         payment.IsDeletedByAdmin = true;
@@ -585,39 +593,18 @@ public class RepPaymentService : IRepPaymentService
         await _uow.SaveChangesAsync(ct);
     }
 
-    public async Task<PagedResult<RepPaymentDto>> AdminGetTrashAsync(
+    public Task<PagedResult<RepPaymentDto>> AdminGetTrashAsync(
         RepPaymentQueryDto filter,
         CancellationToken ct = default)
     {
-        // Preserve the existing 30-day admin-trash retention rule.
-        var cutoff = DateTime.UtcNow.AddDays(-30);
-        var expired = await _uow.Repository<RepPayment>().Query()
-            .Where(p => p.IsDeletedByAdmin
-                && p.AdminDeletedAt.HasValue
-                && p.AdminDeletedAt.Value < cutoff)
-            .ToListAsync(ct);
-
-        foreach (var payment in expired)
-        {
-            DeleteImageFile(payment.ImageUrl);
-            _uow.Repository<RepPayment>().Remove(payment);
-        }
-
-        if (expired.Count > 0)
-            await _uow.SaveChangesAsync(ct);
-
-        var query = _uow.Repository<RepPayment>().Query()
-            .AsNoTracking()
-            .Include(p => p.Rep)
-            .Where(p => p.IsDeletedByAdmin);
-
-        return await ExecutePagedQueryAsync(query, filter, ct);
+        // Trash reads are side-effect free. Expiry is handled by the hourly cleanup service.
+        return GetAllAsync(filter, trash: true, ct);
     }
 
     public async Task AdminRestoreAsync(Guid id, CancellationToken ct = default)
     {
         var payment = await _uow.Repository<RepPayment>().Query()
-            .FirstOrDefaultAsync(p => p.Id == id, ct)
+            .FirstOrDefaultAsync(p => p.Id == id && p.IsDeletedByAdmin && !p.IsPurgedByAdmin, ct)
             ?? throw new NotFoundException("Payment report", id);
 
         payment.IsDeletedByAdmin = false;
@@ -651,26 +638,30 @@ public class RepPaymentService : IRepPaymentService
 
     public async Task AdminHardDeleteAsync(Guid id, CancellationToken ct = default)
     {
+        // Kept for API compatibility; permanent Admin removal is a non-destructive audit hide.
         var payment = await _uow.Repository<RepPayment>().Query()
-            .FirstOrDefaultAsync(p => p.Id == id, ct)
-            ?? throw new NotFoundException("Payment report", id);
+            .FirstOrDefaultAsync(p => p.Id == id && p.IsDeletedByAdmin && !p.IsPurgedByAdmin, ct)
+            ?? throw new NotFoundException("Admin Trash payment report", id);
 
-        DeleteImageFile(payment.ImageUrl);
-        _uow.Repository<RepPayment>().Remove(payment);
+        AdminRecordTrashPurge.MarkRepPayment(payment, DateTime.UtcNow);
         await _uow.SaveChangesAsync(ct);
     }
+
+    public Task AdminPurgeAsync(Guid id, CancellationToken ct = default) =>
+        AdminHardDeleteAsync(id, ct);
 
     public async Task BulkSoftDeleteAdminAsync(List<Guid> ids, string deletedBy, CancellationToken ct = default)
     {
         var payments = await _uow.Repository<RepPayment>().Query()
-            .Where(p => ids.Contains(p.Id) && !p.IsDeletedByAdmin)
+            .Where(p => ids.Contains(p.Id) && !p.IsDeletedByAdmin && !p.IsPurgedByAdmin)
             .ToListAsync(ct);
 
-        foreach (var p in payments)
+        var now = DateTime.UtcNow;
+        foreach (var payment in payments)
         {
-            p.IsDeletedByAdmin = true;
-            p.AdminDeletedAt = DateTime.UtcNow;
-            p.UpdatedBy = deletedBy;
+            payment.IsDeletedByAdmin = true;
+            payment.AdminDeletedAt = now;
+            payment.UpdatedBy = deletedBy;
         }
 
         await _uow.SaveChangesAsync(ct);
@@ -738,14 +729,22 @@ public class RepPaymentService : IRepPaymentService
         CancellationToken ct = default)
     {
         var repIds = await GetAssignedRepIdsAsync(coordinatorUserId, ct);
+        var personalTrash = _uow.Repository<UserRecordTrash>().Query();
 
         var query = _uow.Repository<RepPayment>().Query()
             .AsNoTracking()
             .Include(p => p.Rep)
-            .Where(p => repIds.Contains(p.RepId)
-                && p.IsDeletedByCoordinator == trash);
+            .Where(p => repIds.Contains(p.RepId) && !p.IsDeletedByAdmin && !p.IsPurgedByAdmin &&
+                (trash
+                    ? personalTrash.Any(t => t.UserId == coordinatorUserId &&
+                        t.RecordKind == PersonalRecordTrash.RepPaymentKind &&
+                        t.RecordId == p.Id && t.PurgedAt == null)
+                    : !personalTrash.Any(t => t.UserId == coordinatorUserId &&
+                        t.RecordKind == PersonalRecordTrash.RepPaymentKind && t.RecordId == p.Id)));
 
-        return await ExecutePagedQueryAsync(query, filter, ct);
+        var result = await ExecutePagedQueryAsync(query, filter, ct);
+        if (trash) await ApplyPersonalDeletedAtAsync(result, coordinatorUserId, ct);
+        return result;
     }
 
     // Backward-compatible list overload for existing tests/callers.
@@ -804,81 +803,90 @@ public class RepPaymentService : IRepPaymentService
             .ToListAsync(ct);
     }
 
-    public async Task<RepPaymentDto> GetForCoordinatorByIdAsync(Guid id, Guid coordinatorUserId, CancellationToken ct = default)
+    public async Task<RepPaymentDto> GetForCoordinatorByIdAsync(Guid id, Guid coordinatorUserId, CancellationToken ct = default, bool includePersonalTrash = false)
     {
         var repIds = await GetAssignedRepIdsAsync(coordinatorUserId, ct);
+        var personalTrash = _uow.Repository<UserRecordTrash>().Query();
 
         var payment = await _uow.Repository<RepPayment>().Query()
             .Include(p => p.Rep)
-            .FirstOrDefaultAsync(p => p.Id == id && repIds.Contains(p.RepId), ct)
+            .FirstOrDefaultAsync(p => p.Id == id && repIds.Contains(p.RepId) &&
+                !p.IsDeletedByAdmin && !p.IsPurgedByAdmin &&
+                !personalTrash.Any(t => t.UserId == coordinatorUserId &&
+                    t.RecordKind == PersonalRecordTrash.RepPaymentKind && t.RecordId == p.Id &&
+                    (!includePersonalTrash || t.PurgedAt != null)), ct)
             ?? throw new NotFoundException("Payment report", id);
 
-        return MapToDto(payment, payment.Rep?.FullName ?? string.Empty, await GetCoordinatorNameAsync(payment.RepId, ct));
+        return MapToDto(payment, payment.Rep?.FullName ?? string.Empty,
+            await GetCoordinatorNameAsync(payment.RepId, ct));
     }
 
     public async Task<RepPaymentDto> CoordinatorUpdateStatusAsync(Guid id, UpdateRepPaymentStatusDto dto, Guid coordinatorUserId, CancellationToken ct = default)
     {
         var repIds = await GetAssignedRepIdsAsync(coordinatorUserId, ct);
+        var personalTrash = _uow.Repository<UserRecordTrash>().Query();
 
         var payment = await _uow.Repository<RepPayment>().Query()
             .Include(p => p.Rep)
-            .FirstOrDefaultAsync(p => p.Id == id && repIds.Contains(p.RepId), ct)
+            .FirstOrDefaultAsync(p => p.Id == id && repIds.Contains(p.RepId) &&
+                !p.IsDeletedByAdmin && !p.IsPurgedByAdmin &&
+                !personalTrash.Any(t => t.UserId == coordinatorUserId &&
+                    t.RecordKind == PersonalRecordTrash.RepPaymentKind && t.RecordId == p.Id), ct)
             ?? throw new NotFoundException("Payment report", id);
 
         if (!Enum.TryParse<RepPaymentStatus>(dto.Status, ignoreCase: true, out var newStatus))
             throw new ArgumentException($"Invalid status '{dto.Status}'.");
 
         var oldStatus = payment.Status;
-
         payment.Status = newStatus;
         payment.AdminNotes = dto.AdminNotes;
         payment.UpdatedAt = DateTime.UtcNow;
         payment.UpdatedBy = $"Coordinator:{coordinatorUserId}";
-
         await _uow.SaveChangesAsync(ct);
 
         if (oldStatus != newStatus)
         {
             var repUserId = payment.Rep?.UserId ?? Guid.Empty;
-
-            await NotifyStatusChangeAsync(
-                payment,
-                repUserId,
-                oldStatus,
-                newStatus,
-                "Sales Coordinator",
-                coordinatorUserId,
-                notifyCoordinator: false,
-                ct: ct);
+            await NotifyStatusChangeAsync(payment, repUserId, oldStatus, newStatus,
+                "Sales Coordinator", coordinatorUserId, notifyCoordinator: false, ct: ct);
         }
 
-        return MapToDto(payment, payment.Rep?.FullName ?? string.Empty, await GetCoordinatorNameAsync(payment.RepId, ct));
+        return MapToDto(payment, payment.Rep?.FullName ?? string.Empty,
+            await GetCoordinatorNameAsync(payment.RepId, ct));
     }
 
     public async Task CoordinatorTrashAsync(Guid id, Guid coordinatorUserId, CancellationToken ct = default)
     {
         var repIds = await GetAssignedRepIdsAsync(coordinatorUserId, ct);
-
         var payment = await _uow.Repository<RepPayment>().Query()
-            .FirstOrDefaultAsync(p => p.Id == id && repIds.Contains(p.RepId), ct)
+            .FirstOrDefaultAsync(p => p.Id == id && repIds.Contains(p.RepId) &&
+                !p.IsDeletedByAdmin && !p.IsPurgedByAdmin, ct)
             ?? throw new NotFoundException("Payment report", id);
 
-        payment.IsDeletedByCoordinator = true;
-        payment.CoordinatorDeletedAt = DateTime.UtcNow;
-        await _uow.SaveChangesAsync(ct);
+        await new PersonalRecordTrash(_uow).HideAsync(
+            coordinatorUserId, PersonalRecordTrash.RepPaymentKind, payment.Id, ct);
     }
 
     public async Task CoordinatorRestoreAsync(Guid id, Guid coordinatorUserId, CancellationToken ct = default)
     {
         var repIds = await GetAssignedRepIdsAsync(coordinatorUserId, ct);
+        var exists = await _uow.Repository<RepPayment>().Query()
+            .AnyAsync(p => p.Id == id && repIds.Contains(p.RepId), ct);
+        if (!exists) throw new NotFoundException("Payment report", id);
 
-        var payment = await _uow.Repository<RepPayment>().Query()
-            .FirstOrDefaultAsync(p => p.Id == id && repIds.Contains(p.RepId), ct)
-            ?? throw new NotFoundException("Payment report", id);
+        await new PersonalRecordTrash(_uow).RestoreAsync(
+            coordinatorUserId, PersonalRecordTrash.RepPaymentKind, id, ct);
+    }
 
-        payment.IsDeletedByCoordinator = false;
-        payment.CoordinatorDeletedAt = null;
-        await _uow.SaveChangesAsync(ct);
+    public async Task CoordinatorPurgeAsync(Guid id, Guid coordinatorUserId, CancellationToken ct = default)
+    {
+        var repIds = await GetAssignedRepIdsAsync(coordinatorUserId, ct);
+        var exists = await _uow.Repository<RepPayment>().Query()
+            .AnyAsync(p => p.Id == id && repIds.Contains(p.RepId), ct);
+        if (!exists) throw new NotFoundException("Payment report", id);
+
+        await new PersonalRecordTrash(_uow).PermanentlyHideAsync(
+            coordinatorUserId, PersonalRecordTrash.RepPaymentKind, id, ct);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -921,6 +929,24 @@ public class RepPaymentService : IRepPaymentService
             .Where(c => c.Id == coordId)
             .Select(c => c.FullName)
             .FirstOrDefaultAsync(ct);
+    }
+
+    private async Task ApplyPersonalDeletedAtAsync(
+        PagedResult<RepPaymentDto> result,
+        Guid userId,
+        CancellationToken ct)
+    {
+        var ids = result.Items.Select(item => item.Id).ToList();
+        if (ids.Count == 0) return;
+
+        var dates = await _uow.Repository<UserRecordTrash>().Query()
+            .Where(t => t.UserId == userId &&
+                t.RecordKind == PersonalRecordTrash.RepPaymentKind && ids.Contains(t.RecordId))
+            .ToDictionaryAsync(t => t.RecordId, t => t.DeletedAt, ct);
+
+        foreach (var item in result.Items)
+            if (dates.TryGetValue(item.Id, out var deletedAt))
+                item.DeletedAt = AsUtc(deletedAt);
     }
 
     private async Task<PagedResult<RepPaymentDto>> ExecutePagedQueryAsync(

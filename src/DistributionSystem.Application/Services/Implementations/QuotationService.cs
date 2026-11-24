@@ -23,6 +23,24 @@ public class QuotationService : IQuotationService
         _emailService = emailService;
     }
 
+    public async Task CoordinatorPurgeAsync(Guid quotationId, Guid coordinatorUserId, CancellationToken ct)
+    {
+        var coordinator = await _unitOfWork.Repository<CoordinatorProfile>().Query()
+            .FirstOrDefaultAsync(c => c.UserId == coordinatorUserId, ct)
+            ?? throw new NotFoundException("Coordinator profile", coordinatorUserId);
+        var repIds = await _unitOfWork.Repository<RepCoordinator>().Query()
+            .Where(rc => rc.CoordinatorId == coordinator.Id).Select(rc => rc.RepId).ToListAsync(ct);
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
+        var allowed = await _unitOfWork.Repository<Quotation>().Query().AnyAsync(q =>
+            q.Id == quotationId && !q.IsDeleted &&
+            (q.CoordinatorId == coordinator.Id || (q.RepId.HasValue && repIds.Contains(q.RepId.Value))) &&
+            personalTrash.Any(t => t.UserId == coordinatorUserId &&
+                t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id && t.PurgedAt == null), ct);
+        if (!allowed) throw new NotFoundException("Trash entry", quotationId);
+        await new PersonalRecordTrash(_unitOfWork).PermanentlyHideAsync(
+            coordinatorUserId, PersonalRecordTrash.QuotationKind, quotationId, ct);
+    }
+
     // ===== Customer endpoints =====
 
     public async Task<QuotationDto> CustomerCreateQuotationAsync(Guid userId, CreateQuotationRequest request, CancellationToken ct)
@@ -63,7 +81,11 @@ public class QuotationService : IQuotationService
             .FirstOrDefaultAsync(c => c.UserId == userId, ct)
             ?? throw new NotFoundException("Customer profile", userId);
 
-        return await GetQuotationsPagedAsync(q => q.CustomerId == customer.Id && !q.IsDeletedByCustomer && !q.IsDeleted, page, pageSize, status, ct);
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
+        return await GetQuotationsPagedAsync(q => q.CustomerId == customer.Id && !q.IsDeleted &&
+            !personalTrash.Any(t => t.UserId == userId &&
+                t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id),
+            page, pageSize, status, ct);
     }
 
     public async Task<QuotationDto> CustomerGetQuotationByIdAsync(Guid userId, Guid quotationId, CancellationToken ct)
@@ -72,8 +94,11 @@ public class QuotationService : IQuotationService
             .FirstOrDefaultAsync(c => c.UserId == userId, ct)
             ?? throw new NotFoundException("Customer profile", userId);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var quotation = await GetQuotationWithIncludes()
-            .FirstOrDefaultAsync(q => q.Id == quotationId && q.CustomerId == customer.Id, ct)
+            .FirstOrDefaultAsync(q => q.Id == quotationId && q.CustomerId == customer.Id && !q.IsDeleted &&
+                !personalTrash.Any(t => t.UserId == userId &&
+                    t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id), ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
         return MapToDto(quotation);
@@ -85,8 +110,11 @@ public class QuotationService : IQuotationService
             .FirstOrDefaultAsync(c => c.UserId == userId, ct)
             ?? throw new NotFoundException("Customer profile", userId);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var quotation = await GetQuotationWithIncludes()
-            .FirstOrDefaultAsync(q => q.Id == quotationId && q.CustomerId == customer.Id, ct)
+            .FirstOrDefaultAsync(q => q.Id == quotationId && q.CustomerId == customer.Id && !q.IsDeleted &&
+                !personalTrash.Any(t => t.UserId == userId &&
+                    t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id), ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
         if (quotation.Status == QuotationStatus.ConvertedToOrder && quotation.ConvertedOrderId.HasValue)
@@ -104,8 +132,11 @@ public class QuotationService : IQuotationService
             .FirstOrDefaultAsync(c => c.UserId == userId, ct)
             ?? throw new NotFoundException("Customer profile", userId);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var quotation = await GetQuotationWithIncludes()
-            .FirstOrDefaultAsync(q => q.Id == quotationId && q.CustomerId == customer.Id, ct)
+            .FirstOrDefaultAsync(q => q.Id == quotationId && q.CustomerId == customer.Id && !q.IsDeleted &&
+                !personalTrash.Any(t => t.UserId == userId &&
+                    t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id), ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
         if (quotation.Status != QuotationStatus.Submitted && quotation.Status != QuotationStatus.UnderReview)
@@ -184,7 +215,11 @@ public class QuotationService : IQuotationService
             .FirstOrDefaultAsync(r => r.UserId == userId, ct)
             ?? throw new NotFoundException("Sales rep profile", userId);
 
-        return await GetQuotationsPagedAsync(q => q.RepId == rep.Id && !q.IsDeletedByRep && !q.IsDeleted, page, pageSize, status, ct);
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
+        return await GetQuotationsPagedAsync(q => q.RepId == rep.Id && !q.IsDeleted &&
+            !personalTrash.Any(t => t.UserId == userId &&
+                t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id),
+            page, pageSize, status, ct);
     }
 
     public async Task<QuotationDto> RepGetQuotationByIdAsync(Guid userId, Guid quotationId, CancellationToken ct)
@@ -193,11 +228,29 @@ public class QuotationService : IQuotationService
             .FirstOrDefaultAsync(r => r.UserId == userId, ct)
             ?? throw new NotFoundException("Sales rep profile", userId);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var quotation = await GetQuotationWithIncludes()
-            .FirstOrDefaultAsync(q => q.Id == quotationId && q.RepId == rep.Id, ct)
+            .FirstOrDefaultAsync(q => q.Id == quotationId && q.RepId == rep.Id && !q.IsDeleted &&
+                !personalTrash.Any(t => t.UserId == userId &&
+                    t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id), ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
         return MapToDto(quotation);
+    }
+
+    public async Task RepPurgeAsync(Guid quotationId, Guid repUserId, CancellationToken ct)
+    {
+        var rep = await _unitOfWork.Repository<SalesRepProfile>().Query()
+            .FirstOrDefaultAsync(r => r.UserId == repUserId, ct)
+            ?? throw new NotFoundException("Sales rep profile", repUserId);
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
+        var allowed = await _unitOfWork.Repository<Quotation>().Query().AnyAsync(q =>
+            q.Id == quotationId && q.RepId == rep.Id && !q.IsDeleted &&
+            personalTrash.Any(t => t.UserId == repUserId &&
+                t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id && t.PurgedAt == null), ct);
+        if (!allowed) throw new NotFoundException("Trash entry", quotationId);
+        await new PersonalRecordTrash(_unitOfWork).PermanentlyHideAsync(
+            repUserId, PersonalRecordTrash.QuotationKind, quotationId, ct);
     }
 
     // ===== Coordinator endpoints =====
@@ -214,9 +267,11 @@ public class QuotationService : IQuotationService
             .Select(rc => rc.RepId)
             .ToListAsync(ct);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         return await GetQuotationsPagedAsync(
             q => (q.CoordinatorId == coordinator.Id || (q.RepId.HasValue && repIds.Contains(q.RepId.Value)))
-                 && !q.IsDeletedByCoordinator && !q.IsDeleted,
+                 && !q.IsDeleted && !personalTrash.Any(t => t.UserId == userId &&
+                    t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id),
             page, pageSize, status, ct);
     }
 
@@ -230,9 +285,11 @@ public class QuotationService : IQuotationService
             .Where(rc => rc.CoordinatorId == coordinator.Id)
             .Select(rc => rc.RepId).ToListAsync(ct);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var quotation = await GetQuotationWithIncludes()
             .FirstOrDefaultAsync(q => q.Id == quotationId
-                && (q.CoordinatorId == coordinator.Id || (q.RepId.HasValue && repIds.Contains(q.RepId.Value))), ct)
+                && (q.CoordinatorId == coordinator.Id || (q.RepId.HasValue && repIds.Contains(q.RepId.Value))) && !q.IsDeleted && !personalTrash.Any(t => t.UserId == userId &&
+                    t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id), ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
         return MapToDto(quotation);
@@ -248,9 +305,12 @@ public class QuotationService : IQuotationService
             .Where(rc => rc.CoordinatorId == coordinator.Id)
             .Select(rc => rc.RepId).ToListAsync(ct);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var quotation = await GetQuotationWithIncludes()
-            .FirstOrDefaultAsync(q => q.Id == quotationId
-                && (q.CoordinatorId == coordinator.Id || (q.RepId.HasValue && repIds.Contains(q.RepId.Value))), ct)
+            .FirstOrDefaultAsync(q => q.Id == quotationId && !q.IsDeleted
+                && (q.CoordinatorId == coordinator.Id || (q.RepId.HasValue && repIds.Contains(q.RepId.Value)))
+                && !personalTrash.Any(t => t.UserId == userId &&
+                    t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id), ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
         if (quotation.Status != QuotationStatus.Submitted)
@@ -298,9 +358,12 @@ public class QuotationService : IQuotationService
             .Where(rc => rc.CoordinatorId == coordinator.Id)
             .Select(rc => rc.RepId).ToListAsync(ct);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var quotation = await GetQuotationWithIncludes()
-            .FirstOrDefaultAsync(q => q.Id == quotationId
-                && (q.CoordinatorId == coordinator.Id || (q.RepId.HasValue && repIds.Contains(q.RepId.Value))), ct)
+            .FirstOrDefaultAsync(q => q.Id == quotationId && !q.IsDeleted
+                && (q.CoordinatorId == coordinator.Id || (q.RepId.HasValue && repIds.Contains(q.RepId.Value)))
+                && !personalTrash.Any(t => t.UserId == userId &&
+                    t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id), ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
         if (quotation.Status != QuotationStatus.Submitted)
@@ -333,7 +396,7 @@ public class QuotationService : IQuotationService
     public async Task<PagedResult<QuotationDto>> AdminGetAllQuotationsAsync(int page, int pageSize, string? status, string? search, CancellationToken ct)
     {
         var query = GetQuotationWithIncludes()
-            .Where(q => !q.IsDeleted);
+            .Where(q => !q.IsDeleted && !q.IsPurgedByAdmin);
 
         if (!string.IsNullOrWhiteSpace(search))
         {
@@ -351,7 +414,7 @@ public class QuotationService : IQuotationService
 
         return new PagedResult<QuotationDto>
         {
-            Items = items.Select(MapToDto),
+            Items = items.Select(x => MapToDto(x)),
             TotalCount = totalCount,
             Page = page,
             PageSize = pageSize
@@ -361,7 +424,7 @@ public class QuotationService : IQuotationService
     public async Task<QuotationDto> AdminGetQuotationByIdAsync(Guid quotationId, CancellationToken ct)
     {
         var quotation = await GetQuotationWithIncludes()
-            .FirstOrDefaultAsync(q => q.Id == quotationId, ct)
+            .FirstOrDefaultAsync(q => q.Id == quotationId && !q.IsDeleted && !q.IsPurgedByAdmin, ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
         return MapToDto(quotation);
@@ -370,7 +433,7 @@ public class QuotationService : IQuotationService
     public async Task<QuotationDto> AdminApproveQuotationAsync(Guid userId, Guid quotationId, ApproveQuotationRequest request, CancellationToken ct)
     {
         var quotation = await GetQuotationWithIncludes()
-            .FirstOrDefaultAsync(q => q.Id == quotationId, ct)
+            .FirstOrDefaultAsync(q => q.Id == quotationId && !q.IsDeleted && !q.IsPurgedByAdmin, ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
         // Admin can approve from any status except already-converted
@@ -404,7 +467,7 @@ public class QuotationService : IQuotationService
     public async Task AdminRejectQuotationAsync(Guid userId, Guid quotationId, RejectQuotationRequest request, CancellationToken ct)
     {
         var quotation = await GetQuotationWithIncludes()
-            .FirstOrDefaultAsync(q => q.Id == quotationId, ct)
+            .FirstOrDefaultAsync(q => q.Id == quotationId && !q.IsDeleted && !q.IsPurgedByAdmin, ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
         // Admin can reject from any status except already-rejected or converted
@@ -437,7 +500,7 @@ public class QuotationService : IQuotationService
     public async Task AdminSoftDeleteAsync(Guid quotationId, string deletedBy, CancellationToken ct)
     {
         var quotation = await _unitOfWork.Repository<Quotation>().Query()
-            .FirstOrDefaultAsync(q => q.Id == quotationId, ct)
+            .FirstOrDefaultAsync(q => q.Id == quotationId && !q.IsDeleted && !q.IsPurgedByAdmin, ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
         quotation.IsDeleted = true;
@@ -448,23 +511,15 @@ public class QuotationService : IQuotationService
 
     public async Task<PagedResult<QuotationDto>> AdminGetTrashAsync(int page, int pageSize, CancellationToken ct)
     {
-        // Auto-purge quotations deleted more than 7 days ago
-        var cutoff = DateTime.UtcNow.AddDays(-7);
-        var expired = await _unitOfWork.Repository<Quotation>().Query()
-            .Where(q => q.IsDeleted && q.DeletedAt.HasValue && q.DeletedAt.Value < cutoff)
-            .ToListAsync(ct);
-        foreach (var q in expired)
-            _unitOfWork.Repository<Quotation>().Remove(q);
-        if (expired.Count > 0)
-            await _unitOfWork.SaveChangesAsync(ct);
-
-        var query = GetQuotationWithIncludes().Where(q => q.IsDeleted);
+        // Expiry is processed by the background cleanup service. Keep the
+        // business row for financial/audit retention; purge only removes it from Trash.
+        var query = GetQuotationWithIncludes().Where(q => q.IsDeleted && !q.IsPurgedByAdmin);
         var totalCount = await query.CountAsync(ct);
         var items = await query.OrderByDescending(q => q.DeletedAt).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
 
         return new PagedResult<QuotationDto>
         {
-            Items = items.Select(MapToDto),
+            Items = items.Select(x => MapToDto(x)),
             TotalCount = totalCount,
             Page = page,
             PageSize = pageSize
@@ -474,12 +529,23 @@ public class QuotationService : IQuotationService
     public async Task AdminRestoreAsync(Guid quotationId, CancellationToken ct)
     {
         var quotation = await _unitOfWork.Repository<Quotation>().Query()
-            .FirstOrDefaultAsync(q => q.Id == quotationId, ct)
+            .FirstOrDefaultAsync(q => q.Id == quotationId && q.IsDeleted && !q.IsPurgedByAdmin, ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
         quotation.IsDeleted = false;
         quotation.DeletedAt = null;
         quotation.DeletedBy = null;
+        await _unitOfWork.SaveChangesAsync(ct);
+    }
+
+    public async Task AdminPurgeAsync(Guid quotationId, CancellationToken ct)
+    {
+        var quotation = await _unitOfWork.Repository<Quotation>().Query()
+            .FirstOrDefaultAsync(q => q.Id == quotationId && q.IsDeleted && !q.IsPurgedByAdmin, ct)
+            ?? throw new NotFoundException("Quotation", quotationId);
+
+        // Preserve the quotation and its linked order/items for audit.
+        AdminRecordTrashPurge.MarkQuotation(quotation, DateTime.UtcNow);
         await _unitOfWork.SaveChangesAsync(ct);
     }
 
@@ -492,12 +558,11 @@ public class QuotationService : IQuotationService
             ?? throw new NotFoundException("Sales rep profile", repUserId);
 
         var quotation = await GetQuotationWithIncludes()
-            .FirstOrDefaultAsync(q => q.Id == quotationId && q.RepId == rep.Id, ct)
+            .FirstOrDefaultAsync(q => q.Id == quotationId && q.RepId == rep.Id && !q.IsDeleted, ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
-        quotation.IsDeletedByRep = true;
-        quotation.RepDeletedAt = DateTime.UtcNow;
-        await _unitOfWork.SaveChangesAsync(ct);
+        await new PersonalRecordTrash(_unitOfWork).HideAsync(
+            repUserId, PersonalRecordTrash.QuotationKind, quotationId, ct);
     }
 
     public async Task<PagedResult<QuotationDto>> RepGetTrashAsync(Guid repUserId, int page, int pageSize, CancellationToken ct)
@@ -506,17 +571,18 @@ public class QuotationService : IQuotationService
             .FirstOrDefaultAsync(r => r.UserId == repUserId, ct)
             ?? throw new NotFoundException("Sales rep profile", repUserId);
 
-        var cutoff = DateTime.UtcNow.AddDays(-7);
-        var expired = await _unitOfWork.Repository<Quotation>().Query()
-            .Where(q => q.RepId == rep.Id && q.IsDeletedByRep && q.RepDeletedAt.HasValue && q.RepDeletedAt.Value < cutoff)
-            .ToListAsync(ct);
-        foreach (var q in expired) { q.IsDeletedByRep = false; q.RepDeletedAt = null; }
-        if (expired.Count > 0) await _unitOfWork.SaveChangesAsync(ct);
-
-        var query = GetQuotationWithIncludes().Where(q => q.RepId == rep.Id && q.IsDeletedByRep);
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
+        var query = GetQuotationWithIncludes().Where(q => q.RepId == rep.Id && !q.IsDeleted &&
+            personalTrash.Any(t => t.UserId == repUserId && t.RecordKind == PersonalRecordTrash.QuotationKind &&
+                t.RecordId == q.Id && t.PurgedAt == null));
         var totalCount = await query.CountAsync(ct);
-        var items = await query.OrderByDescending(q => q.RepDeletedAt).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
-        return new PagedResult<QuotationDto> { Items = items.Select(MapToDto), TotalCount = totalCount, Page = page, PageSize = pageSize };
+        var items = await query.OrderByDescending(q => personalTrash.Where(t => t.UserId == repUserId &&
+            t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id)
+            .Select(t => t.DeletedAt).FirstOrDefault()).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
+        var deletionDates = await personalTrash.Where(t => t.UserId == repUserId &&
+                t.RecordKind == PersonalRecordTrash.QuotationKind && items.Select(q => q.Id).Contains(t.RecordId))
+            .ToDictionaryAsync(t => t.RecordId, t => t.DeletedAt, ct);
+        return new PagedResult<QuotationDto> { Items = items.Select(q => MapToDto(q, deletionDates.GetValueOrDefault(q.Id))), TotalCount = totalCount, Page = page, PageSize = pageSize };
     }
 
     public async Task RepRestoreAsync(Guid quotationId, Guid repUserId, CancellationToken ct)
@@ -525,13 +591,15 @@ public class QuotationService : IQuotationService
             .FirstOrDefaultAsync(r => r.UserId == repUserId, ct)
             ?? throw new NotFoundException("Sales rep profile", repUserId);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var quotation = await _unitOfWork.Repository<Quotation>().Query()
-            .FirstOrDefaultAsync(q => q.Id == quotationId && q.RepId == rep.Id, ct)
+            .FirstOrDefaultAsync(q => q.Id == quotationId && q.RepId == rep.Id && !q.IsDeleted &&
+                personalTrash.Any(t => t.UserId == repUserId && t.RecordKind == PersonalRecordTrash.QuotationKind &&
+                    t.RecordId == q.Id && t.PurgedAt == null), ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
-        quotation.IsDeletedByRep = false;
-        quotation.RepDeletedAt = null;
-        await _unitOfWork.SaveChangesAsync(ct);
+        await new PersonalRecordTrash(_unitOfWork).RestoreAsync(
+            repUserId, PersonalRecordTrash.QuotationKind, quotationId, ct);
     }
 
     // ── Coordinator trash ─────────────────────────────────────────────────
@@ -547,15 +615,16 @@ public class QuotationService : IQuotationService
             .Select(rc => rc.RepId)
             .ToListAsync(ct);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var quotation = await GetQuotationWithIncludes()
             .FirstOrDefaultAsync(q => q.Id == quotationId
                 && (q.CoordinatorId == coord.Id || (q.RepId.HasValue && repIds.Contains(q.RepId.Value)))
-                && !q.IsDeletedByCoordinator && !q.IsDeleted, ct)
+                && !q.IsDeleted && !personalTrash.Any(t => t.UserId == coordinatorUserId &&
+                    t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id), ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
-        quotation.IsDeletedByCoordinator = true;
-        quotation.CoordinatorDeletedAt = DateTime.UtcNow;
-        await _unitOfWork.SaveChangesAsync(ct);
+        await new PersonalRecordTrash(_unitOfWork).HideAsync(
+            coordinatorUserId, PersonalRecordTrash.QuotationKind, quotationId, ct);
     }
 
     public async Task<PagedResult<QuotationDto>> CoordinatorGetTrashAsync(Guid coordinatorUserId, int page, int pageSize, CancellationToken ct)
@@ -569,20 +638,21 @@ public class QuotationService : IQuotationService
             .Select(rc => rc.RepId)
             .ToListAsync(ct);
 
-        var cutoff = DateTime.UtcNow.AddDays(-7);
-        var expired = await _unitOfWork.Repository<Quotation>().Query()
-            .Where(q => (q.CoordinatorId == coord.Id || (q.RepId.HasValue && repIds.Contains(q.RepId.Value)))
-                        && q.IsDeletedByCoordinator && q.CoordinatorDeletedAt.HasValue && q.CoordinatorDeletedAt.Value < cutoff)
-            .ToListAsync(ct);
-        foreach (var q in expired) { q.IsDeletedByCoordinator = false; q.CoordinatorDeletedAt = null; }
-        if (expired.Count > 0) await _unitOfWork.SaveChangesAsync(ct);
-
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
+        // Expiry is processed by the scheduled cleanup service, never by a list request.
+        // Legacy coordinator flags are backfilled by the EF migration. Expiry is handled by the scheduled cleanup service.
         var query = GetQuotationWithIncludes()
             .Where(q => (q.CoordinatorId == coord.Id || (q.RepId.HasValue && repIds.Contains(q.RepId.Value)))
-                        && q.IsDeletedByCoordinator);
+                        && !q.IsDeleted && personalTrash.Any(t => t.UserId == coordinatorUserId &&
+                            t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id && t.PurgedAt == null));
         var totalCount = await query.CountAsync(ct);
-        var items = await query.OrderByDescending(q => q.CoordinatorDeletedAt).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
-        return new PagedResult<QuotationDto> { Items = items.Select(MapToDto), TotalCount = totalCount, Page = page, PageSize = pageSize };
+        var items = await query.OrderByDescending(q => personalTrash.Where(t => t.UserId == coordinatorUserId &&
+                t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id)
+                .Select(t => t.DeletedAt).FirstOrDefault()).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
+        var deletionDates = await personalTrash.Where(t => t.UserId == coordinatorUserId &&
+                t.RecordKind == PersonalRecordTrash.QuotationKind && items.Select(q => q.Id).Contains(t.RecordId))
+            .ToDictionaryAsync(t => t.RecordId, t => t.DeletedAt, ct);
+        return new PagedResult<QuotationDto> { Items = items.Select(q => MapToDto(q, deletionDates.GetValueOrDefault(q.Id))), TotalCount = totalCount, Page = page, PageSize = pageSize };
     }
 
     public async Task CoordinatorRestoreAsync(Guid quotationId, Guid coordinatorUserId, CancellationToken ct)
@@ -596,15 +666,16 @@ public class QuotationService : IQuotationService
             .Select(rc => rc.RepId)
             .ToListAsync(ct);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var quotation = await _unitOfWork.Repository<Quotation>().Query()
             .FirstOrDefaultAsync(q => q.Id == quotationId
                 && (q.CoordinatorId == coord.Id || (q.RepId.HasValue && repIds.Contains(q.RepId.Value)))
-                && q.IsDeletedByCoordinator, ct)
+                && !q.IsDeleted && personalTrash.Any(t => t.UserId == coordinatorUserId &&
+                    t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id && t.PurgedAt == null), ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
-        quotation.IsDeletedByCoordinator = false;
-        quotation.CoordinatorDeletedAt = null;
-        await _unitOfWork.SaveChangesAsync(ct);
+        await new PersonalRecordTrash(_unitOfWork).RestoreAsync(
+            coordinatorUserId, PersonalRecordTrash.QuotationKind, quotationId, ct);
     }
 
     // ── Customer trash ────────────────────────────────────────────────────
@@ -619,9 +690,10 @@ public class QuotationService : IQuotationService
             .FirstOrDefaultAsync(q => q.Id == quotationId && q.CustomerId == customer.Id, ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
-        quotation.IsDeletedByCustomer = true;
-        quotation.CustomerDeletedAt = DateTime.UtcNow;
-        await _unitOfWork.SaveChangesAsync(ct);
+        if (quotation.IsDeleted)
+            throw new NotFoundException("Quotation", quotationId);
+        await new PersonalRecordTrash(_unitOfWork).HideAsync(
+            customerUserId, PersonalRecordTrash.QuotationKind, quotationId, ct);
     }
 
     public async Task<PagedResult<QuotationDto>> CustomerGetTrashAsync(Guid customerUserId, int page, int pageSize, CancellationToken ct)
@@ -630,17 +702,18 @@ public class QuotationService : IQuotationService
             .FirstOrDefaultAsync(c => c.UserId == customerUserId, ct)
             ?? throw new NotFoundException("Customer profile", customerUserId);
 
-        var cutoff = DateTime.UtcNow.AddDays(-7);
-        var expired = await _unitOfWork.Repository<Quotation>().Query()
-            .Where(q => q.CustomerId == customer.Id && q.IsDeletedByCustomer && q.CustomerDeletedAt.HasValue && q.CustomerDeletedAt.Value < cutoff)
-            .ToListAsync(ct);
-        foreach (var q in expired) { q.IsDeletedByCustomer = false; q.CustomerDeletedAt = null; }
-        if (expired.Count > 0) await _unitOfWork.SaveChangesAsync(ct);
-
-        var query = GetQuotationWithIncludes().Where(q => q.CustomerId == customer.Id && q.IsDeletedByCustomer);
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
+        var query = GetQuotationWithIncludes().Where(q => q.CustomerId == customer.Id && !q.IsDeleted &&
+            personalTrash.Any(t => t.UserId == customerUserId && t.RecordKind == PersonalRecordTrash.QuotationKind &&
+                t.RecordId == q.Id && t.PurgedAt == null));
         var totalCount = await query.CountAsync(ct);
-        var items = await query.OrderByDescending(q => q.CustomerDeletedAt).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
-        return new PagedResult<QuotationDto> { Items = items.Select(MapToDto), TotalCount = totalCount, Page = page, PageSize = pageSize };
+        var items = await query.OrderByDescending(q => personalTrash.Where(t => t.UserId == customerUserId &&
+            t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id)
+            .Select(t => t.DeletedAt).FirstOrDefault()).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
+        var deletionDates = await personalTrash.Where(t => t.UserId == customerUserId &&
+                t.RecordKind == PersonalRecordTrash.QuotationKind && items.Select(q => q.Id).Contains(t.RecordId))
+            .ToDictionaryAsync(t => t.RecordId, t => t.DeletedAt, ct);
+        return new PagedResult<QuotationDto> { Items = items.Select(q => MapToDto(q, deletionDates.GetValueOrDefault(q.Id))), TotalCount = totalCount, Page = page, PageSize = pageSize };
     }
 
     public async Task CustomerRestoreAsync(Guid quotationId, Guid customerUserId, CancellationToken ct)
@@ -649,13 +722,15 @@ public class QuotationService : IQuotationService
             .FirstOrDefaultAsync(c => c.UserId == customerUserId, ct)
             ?? throw new NotFoundException("Customer profile", customerUserId);
 
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var quotation = await _unitOfWork.Repository<Quotation>().Query()
-            .FirstOrDefaultAsync(q => q.Id == quotationId && q.CustomerId == customer.Id, ct)
+            .FirstOrDefaultAsync(q => q.Id == quotationId && q.CustomerId == customer.Id && !q.IsDeleted &&
+                personalTrash.Any(t => t.UserId == customerUserId && t.RecordKind == PersonalRecordTrash.QuotationKind &&
+                    t.RecordId == q.Id && t.PurgedAt == null), ct)
             ?? throw new NotFoundException("Quotation", quotationId);
 
-        quotation.IsDeletedByCustomer = false;
-        quotation.CustomerDeletedAt = null;
-        await _unitOfWork.SaveChangesAsync(ct);
+        await new PersonalRecordTrash(_unitOfWork).RestoreAsync(
+            customerUserId, PersonalRecordTrash.QuotationKind, quotationId, ct);
     }
 
     private async Task<Quotation> CreateQuotationCore(Guid customerId, Guid? repId, Guid? coordinatorId, CreateQuotationRequest request, CancellationToken ct)
@@ -796,7 +871,7 @@ public class QuotationService : IQuotationService
 
         return new PagedResult<QuotationDto>
         {
-            Items = items.Select(MapToDto),
+            Items = items.Select(x => MapToDto(x)),
             TotalCount = totalCount,
             Page = page,
             PageSize = pageSize
@@ -840,7 +915,22 @@ public class QuotationService : IQuotationService
         }
     }
 
-    private static QuotationDto MapToDto(Quotation q) => new()
+    public async Task CustomerPurgeAsync(Guid quotationId, Guid customerUserId, CancellationToken ct)
+    {
+        var customer = await _unitOfWork.Repository<CustomerProfile>().Query()
+            .FirstOrDefaultAsync(c => c.UserId == customerUserId, ct)
+            ?? throw new NotFoundException("Customer profile", customerUserId);
+        var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
+        var allowed = await _unitOfWork.Repository<Quotation>().Query().AnyAsync(q =>
+            q.Id == quotationId && q.CustomerId == customer.Id && !q.IsDeleted &&
+            personalTrash.Any(t => t.UserId == customerUserId &&
+                t.RecordKind == PersonalRecordTrash.QuotationKind && t.RecordId == q.Id && t.PurgedAt == null), ct);
+        if (!allowed) throw new NotFoundException("Trash entry", quotationId);
+        await new PersonalRecordTrash(_unitOfWork).PermanentlyHideAsync(
+            customerUserId, PersonalRecordTrash.QuotationKind, quotationId, ct);
+    }
+
+    private static QuotationDto MapToDto(Quotation q, DateTime? personalDeletedAt = null) => new()
     {
         Id = q.Id,
         QuotationNumber = q.QuotationNumber,
@@ -877,6 +967,6 @@ public class QuotationService : IQuotationService
         }).ToList(),
         CreatedAt = AsUtc(q.CreatedAt),
         IsDeleted = q.IsDeleted,
-        DeletedAt = AsUtc(q.DeletedAt ?? q.RepDeletedAt ?? q.CoordinatorDeletedAt ?? q.CustomerDeletedAt)
+        DeletedAt = AsUtc(personalDeletedAt ?? q.DeletedAt ?? q.RepDeletedAt ?? q.CoordinatorDeletedAt ?? q.CustomerDeletedAt)
     };
 }

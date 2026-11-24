@@ -18,6 +18,35 @@ public class PaymentService : IPaymentService
         _unitOfWork = unitOfWork;
     }
 
+    // Rep-facing payment operations must validate customer assignment server-side.
+    // The unrestricted CreateAsync/GetCustomerLedgerAsync methods are used for
+    // internal/Admin accounting, not directly for user-provided Rep customer IDs.
+    private async Task<(CustomerProfile Customer, Guid RepId)> ResolveAssignedCustomerForRepAsync(
+        Guid customerId, Guid repUserId, CancellationToken ct)
+    {
+        var rep = await _unitOfWork.Repository<SalesRepProfile>().Query()
+            .FirstOrDefaultAsync(r => r.UserId == repUserId, ct)
+            ?? throw new NotFoundException("Sales rep profile", repUserId);
+        var customer = await _unitOfWork.Repository<CustomerProfile>().Query()
+            .FirstOrDefaultAsync(c => c.Id == customerId && c.AssignedRepId == rep.Id && !c.IsDeleted, ct)
+            ?? throw new NotFoundException("Assigned customer", customerId);
+        return (customer, rep.Id);
+    }
+
+    public async Task<PaymentDto> CreateForRepAsync(
+        CreatePaymentRequest request, Guid repUserId, CancellationToken ct = default)
+    {
+        var (_, repId) = await ResolveAssignedCustomerForRepAsync(request.CustomerId, repUserId, ct);
+        return await CreateAsync(request, repId, ct);
+    }
+
+    public async Task<CustomerLedgerDto> GetCustomerLedgerForRepAsync(
+        Guid customerId, Guid repUserId, CancellationToken ct = default)
+    {
+        var (customer, _) = await ResolveAssignedCustomerForRepAsync(customerId, repUserId, ct);
+        return await BuildLedger(customer, ct);
+    }
+
     public async Task<PaymentDto> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
         var payment = await _unitOfWork.Repository<Payment>().Query()
@@ -29,8 +58,22 @@ public class PaymentService : IPaymentService
 
     public async Task<PaymentDto> CreateAsync(CreatePaymentRequest request, Guid? collectedByRepId = null, CancellationToken cancellationToken = default)
     {
+        if (request.Amount <= 0)
+            throw new BusinessException("Payment amount must be greater than zero.");
+
         var customer = await _unitOfWork.Repository<CustomerProfile>().GetByIdAsync(request.CustomerId, cancellationToken)
             ?? throw new NotFoundException("Customer", request.CustomerId);
+
+        // Never attach a payment to an order belonging to another customer.
+        // Deleted orders are intentionally retained for financial reconciliation.
+        if (request.OrderId.HasValue)
+        {
+            var matchesCustomer = await _unitOfWork.Repository<Order>().Query()
+                .AnyAsync(o => o.Id == request.OrderId.Value && o.CustomerId == request.CustomerId,
+                    cancellationToken);
+            if (!matchesCustomer)
+                throw new NotFoundException("Customer order", request.OrderId.Value);
+        }
 
         var payment = new Payment
         {

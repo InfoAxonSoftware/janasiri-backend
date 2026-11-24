@@ -6,8 +6,13 @@ namespace DistributionSystem.Application.Services.Interfaces;
 public interface IOrderService
 {
     Task<OrderDto> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
+    Task<OrderDto> RepGetByIdAsync(Guid id, Guid repUserId, CancellationToken cancellationToken = default);
+    Task<OrderDto> CustomerGetByIdAsync(Guid id, Guid customerUserId, CancellationToken cancellationToken = default);
+    Task<PagedResult<OrderDto>> GetForRepAsync(Guid repUserId, OrderFilterRequest filter, CancellationToken cancellationToken = default);
+    Task<PagedResult<OrderDto>> GetForCustomerAsync(Guid customerUserId, OrderFilterRequest filter, CancellationToken cancellationToken = default);
     Task<PagedResult<OrderDto>> GetAllAsync(OrderFilterRequest filter, CancellationToken cancellationToken = default);
     Task<PagedResult<OrderDto>> GetForCoordinatorAsync(Guid coordinatorUserId, OrderFilterRequest filter, CancellationToken cancellationToken = default);
+    Task<OrderDto> CoordinatorGetByIdAsync(Guid id, Guid coordinatorUserId, CancellationToken cancellationToken = default);
     Task<PagedResult<UnifiedOrderDto>> GetUnifiedAdminAsync(UnifiedOrderFilterRequest filter, bool trash, CancellationToken cancellationToken = default);
     Task<PagedResult<UnifiedOrderDto>> GetUnifiedRepAsync(Guid repUserId, UnifiedOrderFilterRequest filter, bool trash, CancellationToken cancellationToken = default);
     Task<PagedResult<UnifiedOrderDto>> GetUnifiedCoordinatorAsync(Guid coordinatorUserId, UnifiedOrderFilterRequest filter, bool trash, CancellationToken cancellationToken = default);
@@ -45,7 +50,10 @@ public interface IOrderService
     Task CustomerSoftDeleteAsync(Guid id, Guid customerUserId, CancellationToken cancellationToken = default);
     Task<PagedResult<OrderDto>> CustomerGetTrashAsync(Guid customerUserId, int page, int pageSize, CancellationToken cancellationToken = default);
     Task CustomerRestoreAsync(Guid id, Guid customerUserId, CancellationToken cancellationToken = default);
+    Task CustomerPurgeAsync(Guid id, Guid customerUserId, CancellationToken cancellationToken = default);
     Task<OrderDto> CancelAsync(Guid id, string reason, CancellationToken cancellationToken = default);
+    Task<OrderDto> CustomerCancelAsync(Guid id, Guid customerUserId, string reason, CancellationToken cancellationToken = default);
+    Task<OrderDto> CustomerRateOrderAsync(Guid id, Guid customerUserId, RateOrderRequest request, CancellationToken cancellationToken = default);
     Task<OrderDto> ConfirmDeliveryAsync(Guid id, CancellationToken cancellationToken = default);
     Task<OrderDto> RateOrderAsync(Guid id, RateOrderRequest request, CancellationToken cancellationToken = default);
     Task<PagedResult<OrderDto>> GetCustomerOrdersAsync(Guid customerId, int page, int pageSize, CancellationToken cancellationToken = default);

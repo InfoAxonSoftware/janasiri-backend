@@ -36,11 +36,11 @@ public class RepPaymentController : ControllerBase
     public async Task<IActionResult> GetEvidence(Guid id, CancellationToken ct)
     {
         if (User.IsInRole("Admin") || User.IsInRole("SuperAdmin"))
-            await _service.GetByIdForAdminAsync(id, ct);
+            await _service.GetByIdForAdminAsync(id, ct, includeAdminTrash: true);
         else if (User.IsInRole("SalesCoordinator"))
-            await _service.GetForCoordinatorByIdAsync(id, GetUserId(), ct);
+            await _service.GetForCoordinatorByIdAsync(id, GetUserId(), ct, includePersonalTrash: true);
         else
-            await _service.GetForRepByIdAsync(id, GetUserId(), ct);
+            await _service.GetForRepByIdAsync(id, GetUserId(), ct, includePersonalTrash: true);
         // Each branch throws NotFoundException (-> 404) if the payment is out of the caller's scope.
 
         var storageKey = await _service.GetEvidenceStorageKeyAsync(id, ct);
@@ -87,7 +87,7 @@ public class RepPaymentController : ControllerBase
     public async Task<IActionResult> DeleteRep(Guid id, CancellationToken ct)
     {
         await _service.DeleteRepAsync(id, GetUserId(), ct);
-        return Ok(ApiResponse<string>.SuccessResponse("Deleted."));
+        return Ok(ApiResponse<string>.SuccessResponse("Moved to your Trash."));
     }
 
     [HttpPut("rep/payment-reports/{id}/trash")]
@@ -104,6 +104,14 @@ public class RepPaymentController : ControllerBase
     {
         await _service.RepRestoreAsync(id, GetUserId(), ct);
         return Ok(ApiResponse<string>.SuccessResponse("Restored."));
+    }
+
+    [HttpDelete("rep/payment-reports/{id}/permanent")]
+    [Authorize(Roles = "SalesRep")]
+    public async Task<IActionResult> RepPurge(Guid id, CancellationToken ct)
+    {
+        await _service.RepPurgeAsync(id, GetUserId(), ct);
+        return Ok(ApiResponse<string>.SuccessResponse("Removed from your Trash; payment evidence retained."));
     }
 
     // ── Admin ─────────────────────────────────────────────────────────────────
@@ -185,8 +193,8 @@ public class RepPaymentController : ControllerBase
     [Authorize(Roles = "Admin,SuperAdmin")]
     public async Task<IActionResult> HardDelete(Guid id, CancellationToken ct)
     {
-        await _service.AdminHardDeleteAsync(id, ct);
-        return Ok(ApiResponse<string>.SuccessResponse("Permanently deleted."));
+        await _service.AdminPurgeAsync(id, ct);
+        return Ok(ApiResponse<string>.SuccessResponse("Removed from Admin Trash; payment evidence retained."));
     }
 
     [HttpPost("admin/payment-reports/bulk-delete")]
@@ -254,6 +262,14 @@ public class RepPaymentController : ControllerBase
     {
         await _service.CoordinatorRestoreAsync(id, GetUserId(), ct);
         return Ok(ApiResponse<string>.SuccessResponse("Restored."));
+    }
+
+    [HttpDelete("coordinator/payment-reports/{id}/permanent")]
+    [Authorize(Roles = "SalesCoordinator")]
+    public async Task<IActionResult> CoordinatorPurge(Guid id, CancellationToken ct)
+    {
+        await _service.CoordinatorPurgeAsync(id, GetUserId(), ct);
+        return Ok(ApiResponse<string>.SuccessResponse("Removed from your Trash; payment evidence retained."));
     }
 }
 
