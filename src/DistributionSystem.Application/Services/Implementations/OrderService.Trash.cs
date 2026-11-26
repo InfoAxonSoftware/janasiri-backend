@@ -75,7 +75,7 @@ public partial class OrderService
                     : !personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.OrderKind &&
                         t.RecordId == o.Id)));
             quickOrders = quickOrders.Where(r => !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
-                r.Rep != null && r.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId) &&
+                (r.CreatedBy == "Quick Order Portal" || (r.Rep != null && r.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId))) &&
                 (trash
                     ? personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.QuickRequestKind &&
                         t.RecordId == r.Id && t.PurgedAt == null)

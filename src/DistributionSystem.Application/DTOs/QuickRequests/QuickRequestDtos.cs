@@ -52,3 +52,50 @@ public class UpdateQuickRequestStatusDto
     public string Status { get; set; } = string.Empty;
     public string? AdminNotes { get; set; }
 }
+
+public class GuestQuickOrderTrackingRequestDto
+{
+    public string RequestNumber { get; set; } = string.Empty;
+    public string PhoneNumber { get; set; } = string.Empty;
+}
+
+public class GuestQuickOrderAttachmentAccessDto
+{
+    public string PhoneNumber { get; set; } = string.Empty;
+}
+
+public class GuestQuickOrderTrackingAttachmentDto
+{
+    public Guid Id { get; set; }
+    public string OriginalFileName { get; set; } = string.Empty;
+    public string ContentType { get; set; } = string.Empty;
+    public long SizeBytes { get; set; }
+    public DateTime UploadedAt { get; set; }
+}
+
+public class GuestQuickOrderTrackingDto
+{
+    public string RequestNumber { get; set; } = string.Empty;
+    public string BusinessName { get; set; } = string.Empty;
+    public string ContactPerson { get; set; } = string.Empty;
+    public string ContactNumberMasked { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; }
+    public List<GuestQuickOrderItemDto> Items { get; set; } = [];
+    public List<GuestQuickOrderTrackingAttachmentDto> Attachments { get; set; } = [];
+}
+public class GuestQuickOrderItemDto
+{
+    public string Description { get; set; } = string.Empty;
+    public string? Size { get; set; }
+    public string? Brand { get; set; }
+    public int Quantity { get; set; }
+}
+
+public class CreateGuestQuickOrderDto
+{
+    public string BusinessName { get; set; } = string.Empty;
+    public string ContactPerson { get; set; } = string.Empty;
+    public string PhoneNumber { get; set; } = string.Empty;
+    public List<GuestQuickOrderItemDto> Items { get; set; } = [];
+}
