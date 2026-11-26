@@ -78,13 +78,25 @@ public class NotificationService : INotificationService
         await _unitOfWork.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task DeleteAsync(Guid notificationId, CancellationToken cancellationToken = default)
+    public async Task DeleteAsync(Guid notificationId, Guid userId, CancellationToken cancellationToken = default)
     {
-        var notification = await _unitOfWork.Repository<Notification>().GetByIdAsync(notificationId, cancellationToken)
+        var notification = await _unitOfWork.Repository<Notification>().Query().FirstOrDefaultAsync(n => n.Id == notificationId && n.UserId == userId, cancellationToken)
             ?? throw new NotFoundException("Notification", notificationId);
 
         _unitOfWork.Repository<Notification>().Remove(notification);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<int> DeleteAllAsync(Guid userId, bool readOnly, CancellationToken cancellationToken = default)
+    {
+        var repository = _unitOfWork.Repository<Notification>();
+        var notifications = await repository.Query()
+            .Where(n => n.UserId == userId && (!readOnly || n.IsRead))
+            .ToListAsync(cancellationToken);
+        foreach (var notification in notifications)
+            repository.Remove(notification);
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        return notifications.Count;
     }
 
     public async Task<NotificationDto> SendToUserAsync(SendNotificationRequest request, CancellationToken cancellationToken = default)
