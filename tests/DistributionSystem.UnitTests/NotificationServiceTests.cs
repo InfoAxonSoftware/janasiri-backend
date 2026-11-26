@@ -23,6 +23,39 @@ public class NotificationServiceTests
     }
 
     [Fact]
+    public async Task DeleteAsync_OnlyAllowsOwner()
+    {
+        var (db, service, _) = CreateSut();
+        var owner = Guid.NewGuid();
+        var n = new Notification { UserId = owner, Title = "Test", Message = "Test" };
+        db.Notifications.Add(n);
+        await db.SaveChangesAsync();
+        var unauthorized = async () => await service.DeleteAsync(n.Id, Guid.NewGuid());
+        await unauthorized.Should().ThrowAsync<NotFoundException>();
+        (await db.Notifications.CountAsync()).Should().Be(1);
+        await service.DeleteAsync(n.Id, owner);
+        (await db.Notifications.CountAsync()).Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(true, 1)]
+    [InlineData(false, 2)]
+    public async Task DeleteAllAsync_OnlyClearsMatchingNotificationsForOwner(bool readOnly, int expected)
+    {
+        var (db, service, _) = CreateSut();
+        var owner = Guid.NewGuid();
+        var other = Guid.NewGuid();
+        db.Notifications.AddRange(
+            new Notification { UserId = owner, Title = "Read", Message = "Test", IsRead = true },
+            new Notification { UserId = owner, Title = "Unread", Message = "Test" },
+            new Notification { UserId = other, Title = "Other", Message = "Test", IsRead = true });
+        await db.SaveChangesAsync();
+        (await service.DeleteAllAsync(owner, readOnly)).Should().Be(expected);
+        (await db.Notifications.CountAsync(n => n.UserId == other)).Should().Be(1);
+        (await service.GetUnreadCountAsync(owner)).Should().Be(readOnly ? 1 : 0);
+    }
+
+    [Fact]
     public async Task MarkAsReadAsync_AllowsTheNotificationOwner()
     {
         var (db, service, _) = CreateSut();

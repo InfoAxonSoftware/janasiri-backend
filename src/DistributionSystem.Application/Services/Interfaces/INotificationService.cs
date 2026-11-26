@@ -10,7 +10,8 @@ public interface INotificationService
     Task<int> GetUnreadCountAsync(Guid userId, CancellationToken cancellationToken = default);
     Task MarkAsReadAsync(Guid notificationId, Guid userId, CancellationToken cancellationToken = default);
     Task MarkAllAsReadAsync(Guid userId, CancellationToken cancellationToken = default);
-    Task DeleteAsync(Guid notificationId, CancellationToken cancellationToken = default);
+    Task DeleteAsync(Guid notificationId, Guid userId, CancellationToken cancellationToken = default);
+    Task<int> DeleteAllAsync(Guid userId, bool readOnly, CancellationToken cancellationToken = default);
     Task<NotificationDto> SendToUserAsync(SendNotificationRequest request, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<NotificationRecipientDto>> GetActiveRecipientsAsync(CancellationToken cancellationToken = default);
     Task SendBroadcastAsync(BroadcastNotificationRequest request, CancellationToken cancellationToken = default);
