@@ -60,6 +60,22 @@ public class NotificationController : ControllerBase
         return Ok(ApiResponse<string>.SuccessResponse("All notifications marked as read"));
     }
 
+    /// <summary>Delete one of my notifications</summary>
+    [HttpDelete("notifications/{id:guid}")]
+    public async Task<IActionResult> DeleteNotification(Guid id, CancellationToken ct)
+    {
+        await _notificationService.DeleteAsync(id, GetUserId(), ct);
+        return Ok(ApiResponse<string>.SuccessResponse("Notification deleted"));
+    }
+
+    /// <summary>Clear my notifications only</summary>
+    [HttpDelete("notifications")]
+    public async Task<IActionResult> DeleteAllNotifications([FromQuery] bool readOnly = true, CancellationToken ct = default)
+    {
+        var count = await _notificationService.DeleteAllAsync(GetUserId(), readOnly, ct);
+        return Ok(ApiResponse<int>.SuccessResponse(count));
+    }
+
     /// <summary>Send notification to user (Admin)</summary>
     [HttpPost("admin/notifications/send")]
     [Authorize(Roles = "Admin,SuperAdmin")]
