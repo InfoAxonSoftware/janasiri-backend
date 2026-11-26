@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using DistributionSystem.Application.DTOs.QuickRequests;
 using DistributionSystem.Application.Exceptions;
 using DistributionSystem.Application.Services.Interfaces;
@@ -281,6 +282,241 @@ public class QuickRequestService : IQuickRequestService
             request.Rep?.FullName ?? string.Empty);
     }
 
+    // ── Public guest customer portal ─────────────────────────────────────────
+
+    public async Task<GuestQuickOrderTrackingDto> TrackGuestOrderAsync(
+        string requestNumber,
+        string phoneNumber,
+        CancellationToken ct = default)
+    {
+        var request = await GetVerifiedGuestOrderAsync(requestNumber, phoneNumber, ct);
+        var contactPerson = ReadGuestDetail(request.Details, "Contact person");
+        var contactNumber = ReadGuestDetail(request.Details, "Contact number");
+        var attachments = request.Images
+            .Select((image, index) => new GuestQuickOrderTrackingAttachmentDto
+            {
+                Id = image.Id,
+                OriginalFileName = $"Photo {index + 1}",
+                ContentType = "image/*",
+                SizeBytes = 0,
+                UploadedAt = image.UploadedAt,
+            })
+            .Concat(request.Attachments.Select(attachment => new GuestQuickOrderTrackingAttachmentDto
+            {
+                Id = attachment.Id,
+                OriginalFileName = attachment.OriginalFileName,
+                ContentType = attachment.ContentType,
+                SizeBytes = attachment.SizeBytes,
+                UploadedAt = attachment.UploadedAt,
+            }))
+            .OrderBy(attachment => attachment.UploadedAt)
+            .ToList();
+
+        return new GuestQuickOrderTrackingDto
+        {
+            RequestNumber = request.RequestNumber,
+            BusinessName = request.CustomerName,
+            ContactPerson = contactPerson,
+            ContactNumberMasked = MaskGuestPhone(contactNumber),
+            Status = request.Status.ToString(),
+            CreatedAt = AsUtc(request.CreatedAt),
+            Items = ParseGuestOrderItems(request.Details),
+            Attachments = attachments,
+        };
+    }
+
+    public async Task<string?> GetGuestAttachmentStorageKeyAsync(
+        string requestNumber,
+        string phoneNumber,
+        Guid attachmentId,
+        CancellationToken ct = default)
+    {
+        var request = await GetVerifiedGuestOrderAsync(requestNumber, phoneNumber, ct);
+        var attachment = request.Attachments.FirstOrDefault(file => file.Id == attachmentId);
+        if (attachment != null)
+            return attachment.StorageKey;
+
+        var image = request.Images.FirstOrDefault(file => file.Id == attachmentId);
+        return image?.ImageUrl;
+    }
+
+    private async Task<QuickRequest> GetVerifiedGuestOrderAsync(
+        string requestNumber,
+        string phoneNumber,
+        CancellationToken ct)
+    {
+        var normalizedRequestNumber = (requestNumber ?? string.Empty).Trim().ToUpperInvariant();
+        var request = await _uow.Repository<QuickRequest>().Query()
+            .Include(r => r.Images)
+            .Include(r => r.Attachments)
+            .FirstOrDefaultAsync(r =>
+                r.RequestNumber == normalizedRequestNumber &&
+                r.Type == QuickRequestType.Order &&
+                r.CreatedBy == "Quick Order Portal" &&
+                !r.IsDeletedByAdmin &&
+                !r.IsPurgedByAdmin,
+                ct);
+
+        var storedPhone = ReadGuestDetail(request?.Details ?? string.Empty, "Contact number");
+        var suppliedDigits = NormalizeGuestPhone(phoneNumber);
+        var storedDigits = NormalizeGuestPhone(storedPhone);
+        if (request == null ||
+            suppliedDigits.Length < 7 ||
+            storedDigits.Length < 7 ||
+            !string.Equals(suppliedDigits, storedDigits, StringComparison.Ordinal))
+        {
+            // Do not reveal whether a reference exists when the phone does not match.
+            throw new NotFoundException("Guest order", normalizedRequestNumber);
+        }
+
+        return request;
+    }
+
+    private static string ReadGuestDetail(string details, string label)
+    {
+        var prefix = label + ":";
+        var line = (details ?? string.Empty)
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(value => value.Trim())
+            .FirstOrDefault(value => value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+
+        return line == null ? string.Empty : line[prefix.Length..].Trim();
+    }
+
+    private static string NormalizeGuestPhone(string? value)
+    {
+        var digits = new string((value ?? string.Empty).Where(char.IsDigit).ToArray());
+        if (digits.StartsWith("94", StringComparison.Ordinal) && digits.Length == 11)
+            return "0" + digits[2..];
+        return digits;
+    }
+
+    private static string MaskGuestPhone(string? value)
+    {
+        var digits = NormalizeGuestPhone(value);
+        if (digits.Length <= 4)
+            return new string('•', digits.Length);
+        return new string('•', digits.Length - 4) + digits[^4..];
+    }
+
+    private static List<GuestQuickOrderItemDto> ParseGuestOrderItems(string details)
+    {
+        var result = new List<GuestQuickOrderItemDto>();
+        var lines = (details ?? string.Empty)
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        var itemsStart = Array.FindIndex(lines, line =>
+            string.Equals(line.Trim(), "ORDER ITEMS", StringComparison.OrdinalIgnoreCase));
+        if (itemsStart < 0)
+            return result;
+
+        var pattern = new Regex(
+            @"^\s*\d+\.\s*(?<description>.*?)\s*\|\s*Size:\s*(?<size>.*?)\s*\|\s*Brand:\s*(?<brand>.*?)\s*\|\s*Quantity:\s*(?<quantity>\d+)\s*$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        foreach (var line in lines.Skip(itemsStart + 1))
+        {
+            var match = pattern.Match(line);
+            if (!match.Success || !int.TryParse(match.Groups["quantity"].Value, out var quantity))
+                continue;
+
+            var size = match.Groups["size"].Value.Trim();
+            var brand = match.Groups["brand"].Value.Trim();
+            result.Add(new GuestQuickOrderItemDto
+            {
+                Description = match.Groups["description"].Value.Trim(),
+                Size = string.Equals(size, "Not specified", StringComparison.OrdinalIgnoreCase) ? null : size,
+                Brand = string.Equals(brand, "Not specified", StringComparison.OrdinalIgnoreCase) ? null : brand,
+                Quantity = quantity,
+            });
+        }
+
+        return result;
+    }
+    public async Task<QuickRequestDto> CreateGuestAsync(
+        CreateGuestQuickOrderDto dto,
+        IList<IFormFile> attachments,
+        CancellationToken ct = default)
+    {
+        static string Clean(string? value) =>
+            string.Join(" ", (value ?? string.Empty)
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                .Trim();
+
+        var businessName = Clean(dto.BusinessName);
+        var contactPerson = Clean(dto.ContactPerson);
+        var phoneNumber = Clean(dto.PhoneNumber);
+
+        if (businessName.Length is < 2 or > 200)
+            throw new BusinessException("Enter a valid business name (2–200 characters).", "GUEST_ORDER_BUSINESS_REQUIRED");
+
+        if (contactPerson.Length is < 2 or > 120)
+            throw new BusinessException("Enter a valid contact person (2–120 characters).", "GUEST_ORDER_CONTACT_REQUIRED");
+
+        var phoneDigits = new string(phoneNumber.Where(char.IsDigit).ToArray());
+        if (phoneDigits.Length is < 7 or > 15 ||
+            phoneNumber.Any(c => !(char.IsDigit(c) || c is '+' or '-' or '(' or ')' or ' ')))
+            throw new BusinessException("Enter a valid contact number.", "GUEST_ORDER_PHONE_INVALID");
+
+        if (dto.Items == null || dto.Items.Count < 1)
+            throw new BusinessException("Add at least one order item.", "GUEST_ORDER_ITEMS_INVALID");
+
+        foreach (var item in dto.Items)
+        {
+            item.Description = Clean(item.Description);
+            item.Size = Clean(item.Size);
+            item.Brand = Clean(item.Brand);
+
+            if (item.Description.Length is < 1 or > 200 || item.Quantity is < 1 or > 999999 ||
+                item.Size?.Length > 80 || item.Brand?.Length > 100)
+                throw new BusinessException("Check the description, size, brand and quantity for each item.", "GUEST_ORDER_ITEM_INVALID");
+        }
+
+        attachments ??= [];
+        if (attachments.Count > 16)
+            throw new BusinessException("You can attach up to 16 files.", "GUEST_ORDER_TOO_MANY_FILES");
+
+        if (attachments.Sum(file => file.Length) > 50L * 1024 * 1024)
+            throw new BusinessException("The combined attachment size cannot exceed 50 MB.", "GUEST_ORDER_FILES_TOO_LARGE");
+
+        foreach (var file in attachments.Where(file => file.Length > 0))
+            ValidateAttachment(file);
+
+        var detailLines = new List<string>
+        {
+            "GUEST ORDER",
+            $"Contact person: {contactPerson}",
+            $"Contact number: {phoneNumber}",
+            "Submitted via: Guest Order Form",
+            string.Empty,
+            "ORDER ITEMS",
+        };
+
+        for (var index = 0; index < dto.Items.Count; index++)
+        {
+            var item = dto.Items[index];
+            detailLines.Add(
+                $"{index + 1}. {item.Description} | Size: {(string.IsNullOrWhiteSpace(item.Size) ? "Not specified" : item.Size)} | Brand: {(string.IsNullOrWhiteSpace(item.Brand) ? "Not specified" : item.Brand)} | Quantity: {item.Quantity}");
+        }
+
+        var request = new QuickRequest
+        {
+            Id = Guid.NewGuid(),
+            RequestNumber = await GenerateUniqueNumberAsync(QuickRequestType.Order, ct),
+            Type = QuickRequestType.Order,
+            CustomerName = businessName,
+            Details = string.Join(Environment.NewLine, detailLines),
+            RepId = null,
+            CreatedBy = "Quick Order Portal",
+        };
+
+        foreach (var file in attachments.Where(file => file.Length > 0))
+            request.Attachments.Add(await SaveAttachmentAsync(request.Id, file, ct));
+
+        await _uow.Repository<QuickRequest>().AddAsync(request, ct);
+        await _uow.SaveChangesAsync(ct);
+
+        return MapToDto(request, string.Empty);
+    }
     // ── Admin ─────────────────────────────────────────────────────────────────
 
     public async Task<QuickRequestDto> CreateAdminAsync(
@@ -492,8 +728,7 @@ public class QuickRequestService : IQuickRequestService
             .FirstOrDefaultAsync(
                 r =>
                     r.Id == requestId &&
-                    r.RepId.HasValue &&
-                    repIds.Contains(r.RepId.Value) &&
+                    (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || r.CreatedBy == "Quick Order Portal") &&
                     !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
                     !personalTrash.Any(t => t.UserId == coordinatorUserId &&
                         t.RecordKind == PersonalRecordTrash.QuickRequestKind && t.RecordId == r.Id &&
@@ -786,8 +1021,7 @@ public class QuickRequestService : IQuickRequestService
             .FirstOrDefaultAsync(
                 r =>
                     r.Id == requestId &&
-                    r.RepId.HasValue &&
-                    repIds.Contains(r.RepId.Value) &&
+                    (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || r.CreatedBy == "Quick Order Portal") &&
                     !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
                     !personalTrash.Any(t => t.UserId == coordinatorUserId &&
                         t.RecordKind == PersonalRecordTrash.QuickRequestKind && t.RecordId == r.Id),
@@ -826,8 +1060,7 @@ public class QuickRequestService : IQuickRequestService
             .Include(r => r.Attachments)
             .Include(r => r.Rep)
             .Where(r =>
-                r.RepId.HasValue &&
-                repIds.Contains(r.RepId.Value) &&
+                (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || r.CreatedBy == "Quick Order Portal") &&
                 !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
                 !personalTrash.Any(t => t.UserId == coordinatorUserId &&
                     t.RecordKind == PersonalRecordTrash.QuickRequestKind && t.RecordId == r.Id));
@@ -888,8 +1121,7 @@ public class QuickRequestService : IQuickRequestService
             .FirstOrDefaultAsync(
                 r =>
                     r.Id == requestId &&
-                    r.RepId.HasValue &&
-                    repIds.Contains(r.RepId.Value) && !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
+                    (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || r.CreatedBy == "Quick Order Portal") && !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
                     !personalTrash.Any(t => t.UserId == coordinatorUserId &&
                         t.RecordKind == PersonalRecordTrash.QuickRequestKind && t.RecordId == r.Id),
                 ct)
@@ -925,7 +1157,7 @@ public class QuickRequestService : IQuickRequestService
             .Where(rc => rc.CoordinatorId == coordinator.Id).Select(rc => rc.RepId).ToListAsync(ct);
         var personalTrash = _uow.Repository<UserRecordTrash>().Query();
         var allowed = await _uow.Repository<QuickRequest>().Query().AnyAsync(r =>
-            r.Id == requestId && r.RepId.HasValue && repIds.Contains(r.RepId.Value) &&
+            r.Id == requestId && (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || r.CreatedBy == "Quick Order Portal") &&
             !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
             personalTrash.Any(t => t.UserId == coordinatorUserId &&
                 t.RecordKind == PersonalRecordTrash.QuickRequestKind && t.RecordId == r.Id && t.PurgedAt == null), ct);
@@ -958,8 +1190,7 @@ public class QuickRequestService : IQuickRequestService
             .Include(r => r.Attachments)
             .Include(r => r.Rep)
             .Where(r =>
-                r.RepId.HasValue &&
-                repIds.Contains(r.RepId.Value) &&
+                (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || r.CreatedBy == "Quick Order Portal") &&
                 !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
                 personalTrash.Any(t => t.UserId == coordinatorUserId &&
                     t.RecordKind == PersonalRecordTrash.QuickRequestKind &&
@@ -1012,8 +1243,7 @@ public class QuickRequestService : IQuickRequestService
             .FirstOrDefaultAsync(
                 r =>
                     r.Id == requestId &&
-                    r.RepId.HasValue &&
-                    repIds.Contains(r.RepId.Value) &&
+                    (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || r.CreatedBy == "Quick Order Portal") &&
                     !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
                     personalTrash.Any(t => t.UserId == coordinatorUserId &&
                         t.RecordKind == PersonalRecordTrash.QuickRequestKind &&

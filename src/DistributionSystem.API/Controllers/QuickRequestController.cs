@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using System.Text.Json;
+using Microsoft.AspNetCore.RateLimiting;
 using DistributionSystem.Application.DTOs.Common;
 using DistributionSystem.Application.DTOs.Notification;
 using DistributionSystem.Application.DTOs.QuickRequests;
@@ -48,6 +50,137 @@ public class QuickRequestController : ControllerBase
         User.FindFirstValue(ClaimTypes.Name)
         ?? User.FindFirstValue(ClaimTypes.NameIdentifier)!;
 
+    // ── Public customer portal: guest quick order ────────────────────────────
+
+    [HttpPost("public/quick-orders")]
+    [AllowAnonymous]
+    [EnableRateLimiting("GuestQuickOrder")]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(55 * 1024 * 1024)]
+    public async Task<IActionResult> CreateGuestQuickOrder(
+        [FromForm] GuestQuickOrderFormDto form,
+        CancellationToken ct)
+    {
+        // Honeypot: silently accept automated submissions without persisting them.
+        if (!string.IsNullOrWhiteSpace(form.Website))
+            return Accepted(new { message = "Request received." });
+
+        if (string.IsNullOrWhiteSpace(form.ItemsJson))
+            return BadRequest(ApiResponse<string>.ErrorResponse("Please add at least one order item."));
+
+        List<GuestQuickOrderItemDto>? items;
+        try
+        {
+            items = JsonSerializer.Deserialize<List<GuestQuickOrderItemDto>>(
+                form.ItemsJson,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        }
+        catch (JsonException)
+        {
+            return BadRequest(ApiResponse<string>.ErrorResponse("The order item details could not be read."));
+        }
+
+        if (items == null)
+            return BadRequest(ApiResponse<string>.ErrorResponse("Please add at least one order item."));
+
+        var result = await _service.CreateGuestAsync(
+            new CreateGuestQuickOrderDto
+            {
+                BusinessName = form.BusinessName,
+                ContactPerson = form.ContactPerson,
+                PhoneNumber = form.PhoneNumber,
+                Items = items,
+            },
+            form.Attachments,
+            ct);
+
+        await _notificationService.SendToRoleAsync(
+            new BroadcastNotificationRequest
+            {
+                Role = "Admin",
+                Title = "New Guest Order",
+                Message = $"Guest order #{result.RequestNumber} received from {result.CustomerName}.",
+                Type = "NewQuickRequest",
+            },
+            ct);
+
+        await _notificationHub.Clients
+            .Group("role_Admin")
+            .SendAsync(
+                "NewQuickRequest",
+                new
+                {
+                    id = result.Id,
+                    requestNumber = result.RequestNumber,
+                    type = result.Type,
+                    customerName = result.CustomerName,
+                    repName = "Guest Portal",
+                    channel = "guest",
+                },
+                ct);
+
+        return Ok(
+            ApiResponse<QuickRequestDto>.SuccessResponse(
+                result,
+                "Quick order submitted successfully."));
+    }
+    [HttpPost("public/quick-orders/track")]
+    [AllowAnonymous]
+    [EnableRateLimiting("GuestOrderTracking")]
+    public async Task<IActionResult> TrackGuestQuickOrder(
+        [FromBody] GuestQuickOrderTrackingRequestDto dto,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(dto.RequestNumber) ||
+            string.IsNullOrWhiteSpace(dto.PhoneNumber))
+        {
+            return BadRequest(ApiResponse<string>.ErrorResponse(
+                "Enter your order reference and contact number."));
+        }
+
+        var result = await _service.TrackGuestOrderAsync(
+            dto.RequestNumber,
+            dto.PhoneNumber,
+            ct);
+
+        return Ok(ApiResponse<GuestQuickOrderTrackingDto>.SuccessResponse(
+            result,
+            "Guest order found."));
+    }
+
+    [HttpPost("public/quick-orders/{requestNumber}/attachments/{attachmentId:guid}")]
+    [AllowAnonymous]
+    [EnableRateLimiting("GuestOrderTracking")]
+    public async Task<IActionResult> DownloadGuestQuickOrderAttachment(
+        string requestNumber,
+        Guid attachmentId,
+        [FromBody] GuestQuickOrderAttachmentAccessDto dto,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(dto.PhoneNumber))
+            return BadRequest(ApiResponse<string>.ErrorResponse("Enter your contact number."));
+
+        var storageKey = await _service.GetGuestAttachmentStorageKeyAsync(
+            requestNumber,
+            dto.PhoneNumber,
+            attachmentId,
+            ct);
+
+        if (storageKey is null)
+            return NotFound();
+
+        var file = await _fileStorage.ReadAsync(storageKey, ct);
+        if (file is null)
+            return NotFound();
+
+        Response.Headers.CacheControl = "no-store, private";
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
+
+        return File(
+            file.Content,
+            file.ContentType,
+            Path.GetFileName(file.FileName));
+    }
     // ── Private attachment/image download ─────────────────────────────────────
 
     /// <summary>
@@ -55,7 +188,7 @@ public class QuickRequestController : ControllerBase
     ///
     /// Access is resolved through the owning request:
     /// SalesRep           -> only their own requests
-    /// SalesCoordinator   -> only requests from assigned reps
+    /// SalesCoordinator   -> assigned-rep requests and guest orders
     /// Admin/SuperAdmin   -> any request
     ///
     /// The same endpoint is kept for backward compatibility with
@@ -222,7 +355,7 @@ public class QuickRequestController : ControllerBase
     [HttpPost("rep/quick-requests/{id:guid}/images")]
     [Authorize(Roles = "SalesRep")]
     [Consumes("multipart/form-data")]
-    [RequestSizeLimit(50 * 1024 * 1024)]
+    [RequestSizeLimit(55 * 1024 * 1024)]
     public async Task<IActionResult> UploadImages(
         Guid id,
         [FromForm] List<IFormFile> images,
@@ -355,7 +488,7 @@ public class QuickRequestController : ControllerBase
     [HttpPost("admin/quick-requests/{id:guid}/images")]
     [Authorize(Roles = "Admin,SuperAdmin")]
     [Consumes("multipart/form-data")]
-    [RequestSizeLimit(50 * 1024 * 1024)]
+    [RequestSizeLimit(55 * 1024 * 1024)]
     public async Task<IActionResult> AdminUploadImages(
         Guid id,
         [FromForm] List<IFormFile> images,
@@ -678,4 +811,13 @@ public class QuickRequestController : ControllerBase
             ApiResponse<List<QuickRequestDto>>.SuccessResponse(
                 result));
     }
+}
+public class GuestQuickOrderFormDto
+{
+    public string BusinessName { get; set; } = string.Empty;
+    public string ContactPerson { get; set; } = string.Empty;
+    public string PhoneNumber { get; set; } = string.Empty;
+    public string ItemsJson { get; set; } = string.Empty;
+    public string? Website { get; set; }
+    public List<IFormFile> Attachments { get; set; } = [];
 }
