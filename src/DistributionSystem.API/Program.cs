@@ -1,4 +1,6 @@
 using System.Text;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
 using System.Security.Claims;
 using Microsoft.AspNetCore.HttpOverrides;
 using DistributionSystem.Application.Configuration;
@@ -204,6 +206,31 @@ builder.Services.AddAuthentication(options =>
     };
 });
 
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("GuestQuickOrder", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 5,
+                Window = TimeSpan.FromMinutes(10),
+                QueueLimit = 0,
+                AutoReplenishment = true,
+            }));
+
+    options.AddPolicy("GuestOrderTracking", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 25,
+                Window = TimeSpan.FromMinutes(10),
+                QueueLimit = 0,
+                AutoReplenishment = true,
+            }));
+});
 builder.Services.AddAuthorization();
 
 // ===== Controllers =====
@@ -334,6 +361,7 @@ fwdOptions.KnownProxies.Clear();
 app.UseForwardedHeaders(fwdOptions);
 
 app.UseRouting();
+app.UseRateLimiter();
 
 app.UseCors("AllowFrontend");
 

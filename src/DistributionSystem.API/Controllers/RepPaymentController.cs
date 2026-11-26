@@ -58,7 +58,7 @@ public class RepPaymentController : ControllerBase
     [HttpPost("rep/payment-reports")]
     [Authorize(Roles = "SalesRep")]
     [Consumes("multipart/form-data")]
-    public async Task<IActionResult> Create([FromForm] string customerName, [FromForm] string referenceNumber, [FromForm] decimal amount, [FromForm] IFormFile? image, CancellationToken ct)
+    public async Task<IActionResult> Create([FromForm] string customerName, [FromForm] string referenceNumber, [FromForm] decimal amount, IFormFile? image, CancellationToken ct)
     {
         var dto = new CreateRepPaymentDto { CustomerName = customerName, ReferenceNumber = referenceNumber, Amount = amount };
         var result = await _service.CreateAsync(GetUserId(), dto, image, ct);

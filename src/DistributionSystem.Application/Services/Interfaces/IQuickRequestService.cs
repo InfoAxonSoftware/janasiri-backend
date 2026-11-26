@@ -28,6 +28,11 @@ public interface IQuickRequestService
     Task CoordinatorRestoreAsync(Guid requestId, Guid coordinatorUserId, CancellationToken ct = default);
     Task CoordinatorPurgeAsync(Guid requestId, Guid coordinatorUserId, CancellationToken ct = default);
 
+    // Public guest customer portal
+    Task<QuickRequestDto> CreateGuestAsync(CreateGuestQuickOrderDto dto, IList<IFormFile> attachments, CancellationToken ct = default);
+    Task<GuestQuickOrderTrackingDto> TrackGuestOrderAsync(string requestNumber, string phoneNumber, CancellationToken ct = default);
+    Task<string?> GetGuestAttachmentStorageKeyAsync(string requestNumber, string phoneNumber, Guid attachmentId, CancellationToken ct = default);
+
     // Admin
     Task<List<QuickRequestDto>> GetAllAsync(string? type = null, string? status = null, CancellationToken ct = default);
     Task<QuickRequestDto> GetByIdAsync(Guid requestId, CancellationToken ct = default, bool includeAdminTrash = false);
