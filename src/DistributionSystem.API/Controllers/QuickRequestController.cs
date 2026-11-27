@@ -52,6 +52,23 @@ public class QuickRequestController : ControllerBase
 
     // ── Public customer portal: guest quick order ────────────────────────────
 
+
+    [HttpGet("quick-requests/{id:guid}/eligible-reps")]
+    [Authorize(Roles = "Admin,SuperAdmin,SalesCoordinator")]
+    public async Task<IActionResult> GetGuestOrderRepOptions(Guid id, CancellationToken ct)
+    {
+        var result = await _service.GetGuestOrderRepOptionsAsync(id, GetUserId(), ct);
+        return Ok(ApiResponse<List<GuestOrderRepOptionDto>>.SuccessResponse(result));
+    }
+
+    [HttpPut("quick-requests/{id:guid}/rep-assignment")]
+    [Authorize(Roles = "Admin,SuperAdmin,SalesCoordinator")]
+    public async Task<IActionResult> AssignGuestOrderRep(Guid id, [FromBody] AssignGuestOrderRepDto dto, CancellationToken ct)
+    {
+        var result = await _service.AssignGuestOrderRepAsync(id, GetUserId(), dto, GetUsername(), ct);
+        return Ok(ApiResponse<QuickRequestDto>.SuccessResponse(result, "Sales rep assignment updated."));
+    }
+
     [HttpPost("public/quick-orders")]
     [AllowAnonymous]
     [EnableRateLimiting("GuestQuickOrder")]
