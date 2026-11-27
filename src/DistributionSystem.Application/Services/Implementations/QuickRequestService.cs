@@ -1,3 +1,5 @@
+using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using System.Text.RegularExpressions;
 using DistributionSystem.Application.DTOs.QuickRequests;
 using DistributionSystem.Application.Exceptions;
@@ -14,6 +16,8 @@ public class QuickRequestService : IQuickRequestService
 {
     private readonly IUnitOfWork _uow;
     private readonly IFileStorageService _fileStorage;
+    private readonly INotificationPublisher? _publisher;
+    private readonly ILogger<QuickRequestService>? _logger;
 
     // Unambiguous alphanumeric chars (no 0/O/1/I/L confusion)
     private static readonly char[] _numberChars =
@@ -51,10 +55,12 @@ public class QuickRequestService : IQuickRequestService
             ".pdf"
         };
 
-    public QuickRequestService(IUnitOfWork uow, IFileStorageService fileStorage)
+    public QuickRequestService(IUnitOfWork uow, IFileStorageService fileStorage, INotificationPublisher? publisher = null, ILogger<QuickRequestService>? logger = null)
     {
         _uow = uow;
         _fileStorage = fileStorage;
+        _publisher = publisher;
+        _logger = logger;
     }
 
     /// <summary>
@@ -631,6 +637,120 @@ public class QuickRequestService : IQuickRequestService
             request.Rep?.FullName ?? string.Empty);
     }
 
+
+    // Guest orders use the existing nullable RepId. Never change their source or status.
+    private async Task<(bool IsAdmin, IQueryable<SalesRepProfile> Eligible)> GetAssignmentScopeAsync(Guid actorId, CancellationToken ct)
+    {
+        var actor = await _uow.Repository<User>().Query().FirstOrDefaultAsync(u => u.Id == actorId && u.IsActive, ct)
+            ?? throw new ForbiddenException("An active account is required.");
+        var eligible = _uow.Repository<SalesRepProfile>().Query()
+            .Where(r => !r.IsDeleted && r.User.IsActive && r.User.Role == UserRole.SalesRep);
+        if (actor.Role is UserRole.Admin or UserRole.SuperAdmin)
+            return (true, eligible);
+        if (actor.Role != UserRole.SalesCoordinator)
+            throw new ForbiddenException("Only administrators and coordinators can manage guest order assignments.");
+        var coordinator = await _uow.Repository<CoordinatorProfile>().Query()
+            .FirstOrDefaultAsync(c => c.UserId == actorId && !c.IsDeleted, ct)
+            ?? throw new ForbiddenException("An active coordinator profile is required.");
+        var memberships = _uow.Repository<RepCoordinator>().Query().Where(rc => rc.CoordinatorId == coordinator.Id);
+        return (false, eligible.Where(r => memberships.Any(rc => rc.RepId == r.Id)));
+    }
+
+    private async Task<QuickRequest> GetAssignableGuestOrderAsync(Guid id, Guid actorId, bool isAdmin, CancellationToken ct)
+    {
+        var request = await _uow.Repository<QuickRequest>().Query()
+            .Include(r => r.Rep).Include(r => r.Images).Include(r => r.Attachments)
+            .FirstOrDefaultAsync(r => r.Id == id && r.Type == QuickRequestType.Order &&
+                r.CreatedBy == "Quick Order Portal" && !r.IsDeletedByAdmin && !r.IsPurgedByAdmin, ct)
+            ?? throw new NotFoundException("Guest order", id);
+        if (!isAdmin)
+        {
+            var coordinator = await _uow.Repository<CoordinatorProfile>().Query()
+                .FirstAsync(c => c.UserId == actorId && !c.IsDeleted, ct);
+            if (request.RepId.HasValue && !await _uow.Repository<RepCoordinator>().Query()
+                .AnyAsync(rc => rc.CoordinatorId == coordinator.Id && rc.RepId == request.RepId.Value, ct))
+                throw new ForbiddenException("This order is assigned to a sales rep outside your team.");
+            if (await _uow.Repository<UserRecordTrash>().Query().AnyAsync(t => t.UserId == actorId &&
+                t.RecordKind == PersonalRecordTrash.QuickRequestKind && t.RecordId == id, ct))
+                throw new NotFoundException("Guest order", id);
+        }
+        return request;
+    }
+
+    public async Task<List<GuestOrderRepOptionDto>> GetGuestOrderRepOptionsAsync(Guid id, Guid actorId, CancellationToken ct = default)
+    {
+        var scope = await GetAssignmentScopeAsync(actorId, ct);
+        await GetAssignableGuestOrderAsync(id, actorId, scope.IsAdmin, ct);
+        return await scope.Eligible.OrderBy(r => r.FullName).ThenBy(r => r.EmployeeCode)
+            .Select(r => new GuestOrderRepOptionDto { Id = r.Id, FullName = r.FullName, EmployeeCode = r.EmployeeCode })
+            .ToListAsync(ct);
+    }
+
+    public async Task<QuickRequestDto> AssignGuestOrderRepAsync(Guid id, Guid actorId, AssignGuestOrderRepDto dto, string updatedBy, CancellationToken ct = default)
+    {
+        var scope = await GetAssignmentScopeAsync(actorId, ct);
+        var request = await GetAssignableGuestOrderAsync(id, actorId, scope.IsAdmin, ct);
+        if (request.RepId != dto.ExpectedRepId)
+            throw new DbUpdateConcurrencyException("The sales rep assignment has changed.");
+        SalesRepProfile? rep = null;
+        if (dto.RepId.HasValue)
+        {
+            rep = await scope.Eligible.FirstOrDefaultAsync(r => r.Id == dto.RepId.Value, ct)
+                ?? throw new ForbiddenException("This sales rep is inactive, unavailable, or outside your team.");
+        }
+        if (request.RepId != dto.RepId)
+        {
+
+            var notices = new List<Notification>();
+            if (request.RepId.HasValue)
+            {
+                var formerRepId = request.RepId.Value;
+                var formerUserId = await _uow.Repository<SalesRepProfile>().Query()
+                    .Where(r => r.Id == formerRepId && r.User.IsActive && r.User.Role == UserRole.SalesRep)
+                    .Select(r => (Guid?)r.UserId).FirstOrDefaultAsync(ct);
+                if (formerUserId.HasValue)
+                    notices.Add(new Notification
+                    {
+                        UserId = formerUserId.Value,
+                        NotificationType = NotificationType.OrderStatusUpdate,
+                        Title = "Order Assignment Removed",
+                        Message = $"Guest order #{request.RequestNumber} is no longer assigned to you.",
+                        Metadata = JsonSerializer.Serialize(new { kind = "GuestOrderAssignmentRemoved", requestNumber = request.RequestNumber })
+                    });
+            }
+            if (rep != null)
+                notices.Add(new Notification
+                {
+                    UserId = rep.UserId,
+                    NotificationType = NotificationType.NewOrder,
+                    Title = "New Order Assigned",
+                    Message = $"Guest order #{request.RequestNumber} from {request.CustomerName} has been assigned to you.",
+                    Metadata = JsonSerializer.Serialize(new { kind = "GuestOrderAssigned", quickRequestId = request.Id, requestNumber = request.RequestNumber })
+                });
+            // Persist notifications and assignment together; publish only after successful commit.
+            foreach (var notice in notices)
+                await _uow.Repository<Notification>().AddAsync(notice, ct);
+            request.RepId = dto.RepId;
+            request.Rep = rep;
+            request.UpdatedAt = DateTime.UtcNow;
+            request.UpdatedBy = updatedBy;
+            await _uow.SaveChangesAsync(ct);
+
+            if (_publisher != null)
+                foreach (var notice in notices)
+                    try
+                    {
+                        await _publisher.PublishToUserAsync(notice.UserId, NotificationService.MapToDto(notice), CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Assignment and unread notification are already saved. Do not report a failed assignment.
+                        _logger?.LogWarning(ex, "Could not publish guest order assignment notification {NotificationId}", notice.Id);
+                    }
+        }
+        return MapToDto(request, rep?.FullName ?? string.Empty);
+    }
+
     public async Task<List<QuickRequestDto>> GetAllAsync(
         string? type = null,
         string? status = null,
@@ -728,7 +848,7 @@ public class QuickRequestService : IQuickRequestService
             .FirstOrDefaultAsync(
                 r =>
                     r.Id == requestId &&
-                    (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || r.CreatedBy == "Quick Order Portal") &&
+                    (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || !r.RepId.HasValue && r.CreatedBy == "Quick Order Portal") &&
                     !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
                     !personalTrash.Any(t => t.UserId == coordinatorUserId &&
                         t.RecordKind == PersonalRecordTrash.QuickRequestKind && t.RecordId == r.Id &&
@@ -1021,7 +1141,7 @@ public class QuickRequestService : IQuickRequestService
             .FirstOrDefaultAsync(
                 r =>
                     r.Id == requestId &&
-                    (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || r.CreatedBy == "Quick Order Portal") &&
+                    (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || !r.RepId.HasValue && r.CreatedBy == "Quick Order Portal") &&
                     !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
                     !personalTrash.Any(t => t.UserId == coordinatorUserId &&
                         t.RecordKind == PersonalRecordTrash.QuickRequestKind && t.RecordId == r.Id),
@@ -1060,7 +1180,7 @@ public class QuickRequestService : IQuickRequestService
             .Include(r => r.Attachments)
             .Include(r => r.Rep)
             .Where(r =>
-                (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || r.CreatedBy == "Quick Order Portal") &&
+                (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || !r.RepId.HasValue && r.CreatedBy == "Quick Order Portal") &&
                 !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
                 !personalTrash.Any(t => t.UserId == coordinatorUserId &&
                     t.RecordKind == PersonalRecordTrash.QuickRequestKind && t.RecordId == r.Id));
@@ -1121,7 +1241,7 @@ public class QuickRequestService : IQuickRequestService
             .FirstOrDefaultAsync(
                 r =>
                     r.Id == requestId &&
-                    (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || r.CreatedBy == "Quick Order Portal") && !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
+                    (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || !r.RepId.HasValue && r.CreatedBy == "Quick Order Portal") && !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
                     !personalTrash.Any(t => t.UserId == coordinatorUserId &&
                         t.RecordKind == PersonalRecordTrash.QuickRequestKind && t.RecordId == r.Id),
                 ct)
@@ -1157,7 +1277,7 @@ public class QuickRequestService : IQuickRequestService
             .Where(rc => rc.CoordinatorId == coordinator.Id).Select(rc => rc.RepId).ToListAsync(ct);
         var personalTrash = _uow.Repository<UserRecordTrash>().Query();
         var allowed = await _uow.Repository<QuickRequest>().Query().AnyAsync(r =>
-            r.Id == requestId && (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || r.CreatedBy == "Quick Order Portal") &&
+            r.Id == requestId && (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || !r.RepId.HasValue && r.CreatedBy == "Quick Order Portal") &&
             !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
             personalTrash.Any(t => t.UserId == coordinatorUserId &&
                 t.RecordKind == PersonalRecordTrash.QuickRequestKind && t.RecordId == r.Id && t.PurgedAt == null), ct);
@@ -1190,7 +1310,7 @@ public class QuickRequestService : IQuickRequestService
             .Include(r => r.Attachments)
             .Include(r => r.Rep)
             .Where(r =>
-                (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || r.CreatedBy == "Quick Order Portal") &&
+                (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || !r.RepId.HasValue && r.CreatedBy == "Quick Order Portal") &&
                 !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
                 personalTrash.Any(t => t.UserId == coordinatorUserId &&
                     t.RecordKind == PersonalRecordTrash.QuickRequestKind &&
@@ -1243,7 +1363,7 @@ public class QuickRequestService : IQuickRequestService
             .FirstOrDefaultAsync(
                 r =>
                     r.Id == requestId &&
-                    (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || r.CreatedBy == "Quick Order Portal") &&
+                    (r.RepId.HasValue && repIds.Contains(r.RepId.Value) || !r.RepId.HasValue && r.CreatedBy == "Quick Order Portal") &&
                     !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
                     personalTrash.Any(t => t.UserId == coordinatorUserId &&
                         t.RecordKind == PersonalRecordTrash.QuickRequestKind &&

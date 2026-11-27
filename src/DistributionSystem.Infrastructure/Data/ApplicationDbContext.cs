@@ -69,6 +69,7 @@ public class ApplicationDbContext : DbContext
         modelBuilder.Entity<Order>().Property(x => x.IsPurgedByAdmin).IsConcurrencyToken();
         modelBuilder.Entity<QuickRequest>().Property(x => x.IsDeletedByAdmin).IsConcurrencyToken();
         modelBuilder.Entity<QuickRequest>().Property(x => x.IsPurgedByAdmin).IsConcurrencyToken();
+        modelBuilder.Entity<QuickRequest>().Property(x => x.RepId).IsConcurrencyToken();
         modelBuilder.Entity<Quotation>().Property(x => x.IsDeleted).IsConcurrencyToken();
         modelBuilder.Entity<Quotation>().Property(x => x.IsPurgedByAdmin).IsConcurrencyToken();
         modelBuilder.Entity<RepPayment>().Property(x => x.IsDeletedByAdmin).IsConcurrencyToken();

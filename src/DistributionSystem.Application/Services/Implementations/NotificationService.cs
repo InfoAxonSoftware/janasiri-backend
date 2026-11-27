@@ -234,7 +234,7 @@ public class NotificationService : INotificationService
         await _publisher.PublishToUserAsync(userId, dto, cancellationToken);
     }
 
-    private static NotificationDto MapToDto(Notification n) => new()
+    internal static NotificationDto MapToDto(Notification n) => new()
     {
         Id = n.Id,
         NotificationType = n.NotificationType.ToString(),
