@@ -36,6 +36,7 @@ public interface IQuickRequestService
     // Admin
 
     Task<List<GuestOrderRepOptionDto>> GetGuestOrderRepOptionsAsync(Guid id, Guid actorId, CancellationToken ct = default);
+    Task<QuickRequestDto> AssignGuestOrderRepsAsync(Guid id, Guid actorId, AssignGuestOrderRepsDto dto, string updatedBy, CancellationToken ct = default);
     Task<QuickRequestDto> AssignGuestOrderRepAsync(Guid id, Guid actorId, AssignGuestOrderRepDto dto, string updatedBy, CancellationToken ct = default);
 
     Task<List<QuickRequestDto>> GetAllAsync(string? type = null, string? status = null, CancellationToken ct = default);

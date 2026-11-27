@@ -69,6 +69,15 @@ public class QuickRequestController : ControllerBase
         return Ok(ApiResponse<QuickRequestDto>.SuccessResponse(result, "Sales rep assignment updated."));
     }
 
+    [HttpPut("quick-requests/{id:guid}/rep-assignments")]
+    [Authorize(Roles = "Admin,SuperAdmin,SalesCoordinator")]
+    public async Task<IActionResult> AssignGuestOrderReps(Guid id, [FromBody] AssignGuestOrderRepsDto dto, CancellationToken ct)
+    {
+        var result = await _service.AssignGuestOrderRepsAsync(id, GetUserId(), dto, GetUsername(), ct);
+        return Ok(ApiResponse<QuickRequestDto>.SuccessResponse(result, "Sales rep assignments updated."));
+    }
+
+
     [HttpPost("public/quick-orders")]
     [AllowAnonymous]
     [EnableRateLimiting("GuestQuickOrder")]
@@ -582,15 +591,13 @@ public class QuickRequestController : ControllerBase
                 GetUsername(),
                 ct);
 
-        // Notify the rep of the status change
-        var repUserId =
-            await _unitOfWork.Repository<SalesRepProfile>()
-                .Query()
-                .Where(r => r.Id == result.RepId)
-                .Select(r => r.UserId)
-                .FirstOrDefaultAsync(ct);
+        // Notify all assigned reps of the status change
+        var assignedIds = result.AssignedReps.Select(r => r.Id).ToArray();
+        var repUserIds = await _unitOfWork.Repository<SalesRepProfile>().Query()
+            .Where(r => assignedIds.Contains(r.Id))
+            .Select(r => r.UserId).Distinct().ToListAsync(ct);
 
-        if (repUserId != Guid.Empty)
+        foreach (var repUserId in repUserIds)
         {
             var label =
                 result.Type == "Order"
@@ -761,6 +768,18 @@ public class QuickRequestController : ControllerBase
                 dto,
                 GetUserId(),
                 ct);
+
+        var assignedIds = result.AssignedReps.Select(r => r.Id).ToArray();
+        var repUserIds = await _unitOfWork.Repository<SalesRepProfile>().Query()
+            .Where(r => assignedIds.Contains(r.Id))
+            .Select(r => r.UserId).Distinct().ToListAsync(ct);
+        foreach (var repUserId in repUserIds)
+        {
+            var label = result.Type == "Order" ? "Quick Order" : "Quick Quotation";
+            await _notificationService.SendNotificationAsync(
+                repUserId, NotificationType.General, $"{label} Status Updated",
+                $"Your {label.ToLower()} #{result.RequestNumber} status changed to {result.Status}.", ct);
+        }
 
         return Ok(
             ApiResponse<QuickRequestDto>.SuccessResponse(

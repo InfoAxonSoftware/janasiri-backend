@@ -51,13 +51,13 @@ public partial class OrderService
         }
         else if (role == RepTrashRole)
         {
-            orders = orders.Where(o => !o.IsDeleted && !o.IsPurgedByAdmin && o.RepId == repId &&
+            orders = orders.Where(o => !o.IsDeleted && !o.IsPurgedByAdmin && (o.RepId == repId || o.AdditionalReps.Any(a => a.RepId == repId)) &&
                 (trash
                     ? personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.OrderKind &&
                         t.RecordId == o.Id && t.PurgedAt == null)
                     : !personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.OrderKind &&
                         t.RecordId == o.Id)));
-            quickOrders = quickOrders.Where(r => !r.IsDeletedByAdmin && !r.IsPurgedByAdmin && r.RepId == repId &&
+            quickOrders = quickOrders.Where(r => !r.IsDeletedByAdmin && !r.IsPurgedByAdmin && (r.RepId == repId || r.AdditionalReps.Any(a => a.RepId == repId)) &&
                 (trash
                     ? personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.QuickRequestKind &&
                         t.RecordId == r.Id && t.PurgedAt == null)
@@ -68,14 +68,14 @@ public partial class OrderService
         {
             orders = orders.Where(o => !o.IsDeleted && !o.IsPurgedByAdmin &&
                 (o.Customer.AssignedCoordinatorId == coordinatorId ||
-                 (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId))) &&
+                 (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId)) || o.AdditionalReps.Any(a => a.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId))) &&
                 (trash
                     ? personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.OrderKind &&
                         t.RecordId == o.Id && t.PurgedAt == null)
                     : !personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.OrderKind &&
                         t.RecordId == o.Id)));
             quickOrders = quickOrders.Where(r => !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
-                ((!r.RepId.HasValue && r.CreatedBy == "Quick Order Portal") || (r.Rep != null && r.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId))) &&
+                ((!r.RepId.HasValue && r.CreatedBy == "Quick Order Portal") || (r.Rep != null && r.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId)) || r.AdditionalReps.Any(a => a.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId))) &&
                 (trash
                     ? personalTrash.Any(t => t.UserId == userId && t.RecordKind == PersonalRecordTrash.QuickRequestKind &&
                         t.RecordId == r.Id && t.PurgedAt == null)
@@ -196,13 +196,13 @@ public partial class OrderService
         var quickIds = rows.Where(x => x.Kind == QuickOrderKind).Select(x => x.Id).ToList();
         var orderEntities = await _unitOfWork.Repository<Order>().Query().AsNoTracking()
             .Include(o => o.Customer).ThenInclude(c => c.User)
-            .Include(o => o.Rep).ThenInclude(r => r!.User)
+            .Include(o => o.AdditionalReps).ThenInclude(a => a.Rep).Include(o => o.Rep).ThenInclude(r => r!.User)
             .Include(o => o.OrderItems).Where(o => orderIds.Contains(o.Id))
             .ToDictionaryAsync(o => o.Id, ct);
 
         // IMPORTANT: unified Orders must load the new generic attachment collection too.
         var quickEntities = await _unitOfWork.Repository<QuickRequest>().Query().AsNoTracking()
-            .Include(r => r.Rep)
+            .Include(r => r.AdditionalReps).ThenInclude(a => a.Rep).Include(r => r.Rep)
             .Include(r => r.Images)
             .Include(r => r.Attachments)
             .Where(r => quickIds.Contains(r.Id))
@@ -226,7 +226,7 @@ public partial class OrderService
             {
                 Id = row.Id, Kind = row.Kind, Number = row.Number,
                 CustomerName = row.CustomerName, ShopName = row.ShopName,
-                CustomerId = row.CustomerId, RepId = row.RepId, RepName = row.RepName,
+                CustomerId = row.CustomerId, RepId = row.RepId, RepName = order.RepName,
                 Status = order.Status, Date = AsUtc(row.Date), CreatedAt = AsUtc(row.CreatedAt),
                 TotalAmount = row.TotalAmount, DeletedAt = AsUtc(row.DeletedAt), Order = order
             };
@@ -237,7 +237,7 @@ public partial class OrderService
         {
             Id = row.Id, Kind = row.Kind, Number = row.Number,
             CustomerName = row.CustomerName, ShopName = row.ShopName,
-            RepId = row.RepId, RepName = row.RepName,
+            RepId = row.RepId, RepName = quick.RepName,
             Status = quick.Status, Date = AsUtc(row.Date), CreatedAt = AsUtc(row.CreatedAt),
             DeletedAt = AsUtc(row.DeletedAt), QuickOrder = quick
         };
@@ -281,7 +281,9 @@ public partial class OrderService
             Status = request.Status.ToString(),
             AdminNotes = request.AdminNotes,
             RepId = request.RepId,
-            RepName = request.Rep?.FullName ?? string.Empty,
+            RepName = string.Join(", ", QuickRequestService.MapAssignedReps(request).Select(a => a.FullName)),
+            AssignedReps = QuickRequestService.MapAssignedReps(request),
+            AssignmentVersion = request.AssignmentVersion,
             CreatedBy = request.CreatedBy,
             ImageUrls = allAttachments
                 .Where(a => !string.Equals(a.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase))
