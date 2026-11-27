@@ -42,6 +42,8 @@ public class Quotation : IAuditableEntity
     // Navigation
     public CustomerProfile Customer { get; set; } = null!;
     public SalesRepProfile? Rep { get; set; }
+    public Guid? AssignmentVersion { get; set; }
+    public ICollection<QuotationAdditionalRep> AdditionalReps { get; set; } = [];
     public CoordinatorProfile? Coordinator { get; set; }
     public Order? ConvertedOrder { get; set; }
     public ICollection<QuotationItem> Items { get; set; } = new List<QuotationItem>();

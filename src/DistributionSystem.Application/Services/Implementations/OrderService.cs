@@ -22,7 +22,7 @@ public partial class OrderService : IOrderService
     {
         var order = await _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).ThenInclude(c => c.User)
-            .Include(o => o.Rep).ThenInclude(r => r!.User)
+            .Include(o => o.AdditionalReps).ThenInclude(a => a.Rep).Include(o => o.Rep).ThenInclude(r => r!.User)
             .Include(o => o.OrderItems)
             .FirstOrDefaultAsync(o => o.Id == id && !o.IsDeleted && !o.IsPurgedByAdmin, cancellationToken)
             ?? throw new NotFoundException("Order", id);
@@ -36,7 +36,7 @@ public partial class OrderService : IOrderService
     {
         var query = _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).ThenInclude(c => c.User)
-            .Include(o => o.Rep)
+            .Include(o => o.AdditionalReps).ThenInclude(a => a.Rep).Include(o => o.Rep)
             .Include(o => o.OrderItems)
             .AsQueryable();
 
@@ -47,7 +47,7 @@ public partial class OrderService : IOrderService
         if (filter.CustomerId.HasValue)
             query = query.Where(o => o.CustomerId == filter.CustomerId.Value);
         if (filter.RepId.HasValue)
-            query = query.Where(o => o.RepId == filter.RepId.Value);
+            query = query.Where(o => (o.RepId == filter.RepId.Value || o.AdditionalReps.Any(a => a.RepId == filter.RepId.Value)));
         if (filter.FromDate.HasValue)
             query = query.Where(o => o.OrderDate >= filter.FromDate.Value);
         if (filter.ToDate.HasValue)
@@ -79,8 +79,8 @@ public partial class OrderService : IOrderService
         var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var query = _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).ThenInclude(c => c.User)
-            .Include(o => o.Rep).Include(o => o.OrderItems)
-            .Where(o => o.RepId == rep.Id && !o.IsDeleted && !o.IsPurgedByAdmin &&
+            .Include(o => o.AdditionalReps).ThenInclude(a => a.Rep).Include(o => o.Rep).Include(o => o.OrderItems)
+            .Where(o => (o.RepId == rep.Id || o.AdditionalReps.Any(a => a.RepId == rep.Id)) && !o.IsDeleted && !o.IsPurgedByAdmin &&
                 !personalTrash.Any(t => t.UserId == repUserId &&
                     t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id));
         if (filter.Status.HasValue) query = query.Where(o => o.Status == filter.Status.Value);
@@ -103,12 +103,12 @@ public partial class OrderService : IOrderService
         var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var query = _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).ThenInclude(c => c.User)
-            .Include(o => o.Rep).Include(o => o.OrderItems)
+            .Include(o => o.AdditionalReps).ThenInclude(a => a.Rep).Include(o => o.Rep).Include(o => o.OrderItems)
             .Where(o => o.CustomerId == customer.Id && !o.IsDeleted && !o.IsPurgedByAdmin &&
                 !personalTrash.Any(t => t.UserId == customerUserId &&
                     t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id));
         if (filter.Status.HasValue) query = query.Where(o => o.Status == filter.Status.Value);
-        if (filter.RepId.HasValue) query = query.Where(o => o.RepId == filter.RepId.Value);
+        if (filter.RepId.HasValue) query = query.Where(o => (o.RepId == filter.RepId.Value || o.AdditionalReps.Any(a => a.RepId == filter.RepId.Value)));
         if (filter.FromDate.HasValue) query = query.Where(o => o.OrderDate >= filter.FromDate.Value);
         if (filter.ToDate.HasValue) query = query.Where(o => o.OrderDate <= filter.ToDate.Value);
         var total = await query.CountAsync(ct);
@@ -127,8 +127,8 @@ public partial class OrderService : IOrderService
         var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var order = await _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).ThenInclude(c => c.User)
-            .Include(o => o.Rep).ThenInclude(r => r!.User).Include(o => o.OrderItems)
-            .FirstOrDefaultAsync(o => o.Id == id && o.RepId == rep.Id && !o.IsDeleted && !o.IsPurgedByAdmin &&
+            .Include(o => o.AdditionalReps).ThenInclude(a => a.Rep).Include(o => o.Rep).ThenInclude(r => r!.User).Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == id && (o.RepId == rep.Id || o.AdditionalReps.Any(a => a.RepId == rep.Id)) && !o.IsDeleted && !o.IsPurgedByAdmin &&
                 !personalTrash.Any(t => t.UserId == repUserId &&
                     t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id), ct)
             ?? throw new NotFoundException("Order", id);
@@ -145,7 +145,7 @@ public partial class OrderService : IOrderService
         var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var order = await _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).ThenInclude(c => c.User)
-            .Include(o => o.Rep).ThenInclude(r => r!.User).Include(o => o.OrderItems)
+            .Include(o => o.AdditionalReps).ThenInclude(a => a.Rep).Include(o => o.Rep).ThenInclude(r => r!.User).Include(o => o.OrderItems)
             .FirstOrDefaultAsync(o => o.Id == id && o.CustomerId == customer.Id && !o.IsDeleted && !o.IsPurgedByAdmin &&
                 !personalTrash.Any(t => t.UserId == customerUserId &&
                     t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id), ct)
@@ -163,14 +163,14 @@ public partial class OrderService : IOrderService
         var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var order = await _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).ThenInclude(c => c.User)
-            .Include(o => o.Rep).ThenInclude(r => r!.User)
+            .Include(o => o.AdditionalReps).ThenInclude(a => a.Rep).Include(o => o.Rep).ThenInclude(r => r!.User)
             .Include(o => o.OrderItems)
             .FirstOrDefaultAsync(o => o.Id == id && !o.IsDeleted && !o.IsPurgedByAdmin &&
                 !personalTrash.Any(t => t.UserId == coordinatorUserId &&
                     t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id) &&
                 (o.Customer.AssignedCoordinatorId == coordinator.Id ||
                  (o.RepId.HasValue && o.Rep != null &&
-                  o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinator.Id))), ct)
+                  o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinator.Id)) || o.AdditionalReps.Any(a => a.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinator.Id))), ct)
             ?? throw new NotFoundException("Order", id);
         var dto = MapToDto(order);
         await AppendQuotationMetadataAsync([dto], ct);
@@ -186,13 +186,13 @@ public partial class OrderService : IOrderService
         var privateTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var query = _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).ThenInclude(c => c.User)
-            .Include(o => o.Rep)
+            .Include(o => o.AdditionalReps).ThenInclude(a => a.Rep).Include(o => o.Rep)
             .Include(o => o.OrderItems)
             .Where(o => !o.IsDeleted && !o.IsPurgedByAdmin &&
                         !privateTrash.Any(t => t.UserId == coordinatorUserId &&
                                t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id) &&
                         (o.Customer.AssignedCoordinatorId == coordinator.Id
-                        || (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinator.Id))))
+                        || (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinator.Id)) || o.AdditionalReps.Any(a => a.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinator.Id))))
             .AsQueryable();
 
         if (filter.Status.HasValue)
@@ -200,7 +200,7 @@ public partial class OrderService : IOrderService
         if (filter.CustomerId.HasValue)
             query = query.Where(o => o.CustomerId == filter.CustomerId.Value);
         if (filter.RepId.HasValue)
-            query = query.Where(o => o.RepId == filter.RepId.Value);
+            query = query.Where(o => (o.RepId == filter.RepId.Value || o.AdditionalReps.Any(a => a.RepId == filter.RepId.Value)));
         if (filter.FromDate.HasValue)
             query = query.Where(o => o.OrderDate >= filter.FromDate.Value);
         if (filter.ToDate.HasValue)
@@ -388,7 +388,7 @@ public partial class OrderService : IOrderService
     {
         var query = _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).ThenInclude(c => c.User)
-            .Include(o => o.Rep)
+            .Include(o => o.AdditionalReps).ThenInclude(a => a.Rep).Include(o => o.Rep)
             .Include(o => o.OrderItems)
             .Where(o => o.IsDeleted && !o.IsPurgedByAdmin);
 
@@ -426,7 +426,7 @@ public partial class OrderService : IOrderService
             ?? throw new NotFoundException("Sales rep profile", repUserId);
 
         var order = await _unitOfWork.Repository<Order>().Query()
-            .FirstOrDefaultAsync(o => o.Id == id && o.RepId == repProfile.Id &&
+            .FirstOrDefaultAsync(o => o.Id == id && (o.RepId == repProfile.Id || o.AdditionalReps.Any(a => a.RepId == repProfile.Id)) &&
                 !o.IsDeleted && !o.IsPurgedByAdmin, cancellationToken)
             ?? throw new NotFoundException("Order", id);
 
@@ -443,8 +443,8 @@ public partial class OrderService : IOrderService
         var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var query = _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).ThenInclude(c => c.User)
-            .Include(o => o.Rep).Include(o => o.OrderItems)
-            .Where(o => o.RepId == repProfile.Id && !o.IsDeleted && !o.IsPurgedByAdmin &&
+            .Include(o => o.AdditionalReps).ThenInclude(a => a.Rep).Include(o => o.Rep).Include(o => o.OrderItems)
+            .Where(o => (o.RepId == repProfile.Id || o.AdditionalReps.Any(a => a.RepId == repProfile.Id)) && !o.IsDeleted && !o.IsPurgedByAdmin &&
                 personalTrash.Any(t => t.UserId == repUserId &&
                     t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id && t.PurgedAt == null));
 
@@ -469,7 +469,7 @@ public partial class OrderService : IOrderService
 
         var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var order = await _unitOfWork.Repository<Order>().Query()
-            .FirstOrDefaultAsync(o => o.Id == id && o.RepId == repProfile.Id &&
+            .FirstOrDefaultAsync(o => o.Id == id && (o.RepId == repProfile.Id || o.AdditionalReps.Any(a => a.RepId == repProfile.Id)) &&
                 !o.IsDeleted && !o.IsPurgedByAdmin &&
                 personalTrash.Any(t => t.UserId == repUserId && t.RecordKind == PersonalRecordTrash.OrderKind &&
                     t.RecordId == o.Id && t.PurgedAt == null), cancellationToken)
@@ -489,10 +489,10 @@ public partial class OrderService : IOrderService
 
         // Coordinator can only delete orders visible to them
         var order = await _unitOfWork.Repository<Order>().Query()
-            .Include(o => o.Customer).Include(o => o.Rep).ThenInclude(r => r!.Coordinators)
+            .Include(o => o.Customer).Include(o => o.AdditionalReps).ThenInclude(a => a.Rep).Include(o => o.Rep).ThenInclude(r => r!.Coordinators)
             .FirstOrDefaultAsync(o => o.Id == id && !o.IsDeleted && !o.IsPurgedByAdmin &&
                 (o.Customer.AssignedCoordinatorId == coord.Id ||
-                 (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coord.Id))),
+                 (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coord.Id)) || o.AdditionalReps.Any(a => a.Rep.Coordinators.Any(rc => rc.CoordinatorId == coord.Id))),
                 cancellationToken)
             ?? throw new NotFoundException("Order", id);
 
@@ -509,13 +509,13 @@ public partial class OrderService : IOrderService
         var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var query = _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).ThenInclude(c => c.User)
-            .Include(o => o.Rep).ThenInclude(r => r!.Coordinators)
+            .Include(o => o.AdditionalReps).ThenInclude(a => a.Rep).Include(o => o.Rep).ThenInclude(r => r!.Coordinators)
             .Include(o => o.OrderItems)
             .Where(o => !o.IsDeleted && !o.IsPurgedByAdmin &&
                 personalTrash.Any(t => t.UserId == coordinatorUserId &&
                     t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id && t.PurgedAt == null) &&
                 (o.Customer.AssignedCoordinatorId == coord.Id ||
-                 (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coord.Id))));
+                 (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coord.Id)) || o.AdditionalReps.Any(a => a.Rep.Coordinators.Any(rc => rc.CoordinatorId == coord.Id))));
 
         var totalCount = await query.CountAsync(cancellationToken);
         var items = await query.OrderByDescending(o => personalTrash.Where(t => t.UserId == coordinatorUserId &&
@@ -538,12 +538,12 @@ public partial class OrderService : IOrderService
 
         var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var order = await _unitOfWork.Repository<Order>().Query()
-            .Include(o => o.Customer).Include(o => o.Rep).ThenInclude(r => r!.Coordinators)
+            .Include(o => o.Customer).Include(o => o.AdditionalReps).ThenInclude(a => a.Rep).Include(o => o.Rep).ThenInclude(r => r!.Coordinators)
             .FirstOrDefaultAsync(o => o.Id == id && !o.IsDeleted && !o.IsPurgedByAdmin &&
                 personalTrash.Any(t => t.UserId == coordinatorUserId &&
                     t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id && t.PurgedAt == null) &&
                 (o.Customer.AssignedCoordinatorId == coord.Id ||
-                 (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coord.Id))),
+                 (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coord.Id)) || o.AdditionalReps.Any(a => a.Rep.Coordinators.Any(rc => rc.CoordinatorId == coord.Id))),
                 cancellationToken)
             ?? throw new NotFoundException("Order", id);
 
@@ -577,7 +577,7 @@ public partial class OrderService : IOrderService
         var personalTrash = _unitOfWork.Repository<UserRecordTrash>().Query();
         var query = _unitOfWork.Repository<Order>().Query()
             .Include(o => o.Customer).ThenInclude(c => c.User)
-            .Include(o => o.Rep).Include(o => o.OrderItems)
+            .Include(o => o.AdditionalReps).ThenInclude(a => a.Rep).Include(o => o.Rep).Include(o => o.OrderItems)
             .Where(o => o.CustomerId == customer.Id && !o.IsDeleted && !o.IsPurgedByAdmin &&
                 personalTrash.Any(t => t.UserId == customerUserId &&
                     t.RecordKind == PersonalRecordTrash.OrderKind && t.RecordId == o.Id && t.PurgedAt == null));
@@ -787,7 +787,7 @@ public partial class OrderService : IOrderService
         CustomerName = o.Customer?.User?.Username ?? o.Customer?.ShopName ?? "",
         ShopName = o.Customer?.ShopName,
         RepId = o.RepId,
-        RepName = o.Rep?.FullName,
+        RepName = string.Join(", ", StandardRepAssignmentService.Map(o.RepId, o.Rep, o.AdditionalReps.Select(a => (a.RepId, a.Rep))).Select(a => a.FullName)),
         OrderDate = o.OrderDate,
         RequiredDeliveryDate = o.RequiredDeliveryDate,
         ActualDeliveryDate = o.ActualDeliveryDate,

@@ -25,6 +25,8 @@ public class QuickRequestDto
     public string? AdminNotes { get; set; }
     public Guid? RepId { get; set; }
     public string RepName { get; set; } = string.Empty;
+    public List<GuestOrderRepOptionDto> AssignedReps { get; set; } = [];
+    public Guid? AssignmentVersion { get; set; }
     public string? CreatedBy { get; set; }
 
     // Existing image URLs kept for backward compatibility
@@ -55,6 +57,24 @@ public class AssignGuestOrderRepDto
     [System.Text.Json.Serialization.JsonRequired]
     public Guid? ExpectedRepId { get; set; }
 }
+
+public class StandardRepAssignmentDto
+{
+    public List<GuestOrderRepOptionDto> AssignedReps { get; set; } = [];
+    public List<GuestOrderRepOptionDto> EligibleReps { get; set; } = [];
+    public Guid? AssignmentVersion { get; set; }
+}
+
+public class AssignGuestOrderRepsDto
+{
+    [System.Text.Json.Serialization.JsonRequired]
+    public List<Guid> RepIds { get; set; } = [];
+    [System.Text.Json.Serialization.JsonRequired]
+    public List<Guid> ExpectedRepIds { get; set; } = [];
+    [System.Text.Json.Serialization.JsonRequired]
+    public Guid? ExpectedVersion { get; set; }
+}
+
 
 public class CreateQuickRequestDto
 {

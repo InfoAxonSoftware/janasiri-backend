@@ -14,6 +14,8 @@ public class QuickRequest
 
     public Guid? RepId { get; set; }
     public SalesRepProfile? Rep { get; set; }
+    public Guid? AssignmentVersion { get; set; }
+    public ICollection<GuestOrderAdditionalRep> AdditionalReps { get; set; } = [];
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAt { get; set; }
