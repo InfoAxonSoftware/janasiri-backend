@@ -65,7 +65,7 @@ public class OrderController : ControllerBase
             .Include(o => o.Rep).ThenInclude(r => r!.Coordinators)
             .AnyAsync(o => o.Id == orderId &&
                            (o.Customer.AssignedCoordinatorId == coordinatorProfileId
-                            || (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorProfileId))), ct);
+                            || (o.RepId.HasValue && o.Rep != null && o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorProfileId)) || o.AdditionalReps.Any(a => a.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorProfileId))), ct);
     }
 
     private async Task PublishOrderStatusChangedAsync(OrderDto order, string status, string? reason, CancellationToken ct)
@@ -89,19 +89,13 @@ public class OrderController : ControllerBase
             await _notificationHub.Clients.Group($"user_{customerInfo.UserId}").SendAsync("OrderStatusChanged", payload, ct);
         }
 
-        if (order.RepId.HasValue)
-        {
-            var repUserId = await _unitOfWork.Repository<SalesRepProfile>().Query()
-                .AsNoTracking()
-                .Where(r => r.Id == order.RepId.Value)
-                .Select(r => (Guid?)r.UserId)
-                .FirstOrDefaultAsync(ct);
-
-            if (repUserId.HasValue)
-            {
-                await _notificationHub.Clients.Group($"user_{repUserId.Value}").SendAsync("OrderStatusChanged", payload, ct);
-            }
-        }
+        var assignedRepUsers = await _unitOfWork.Repository<SalesRepProfile>().Query()
+            .AsNoTracking()
+            .Where(r => r.Id == order.RepId ||
+                _unitOfWork.Repository<OrderAdditionalRep>().Query().Any(a => a.OrderId == order.Id && a.RepId == r.Id))
+            .Select(r => r.UserId).Distinct().ToListAsync(ct);
+        foreach (var userId in assignedRepUsers)
+            await _notificationHub.Clients.Group($"user_{userId}").SendAsync("OrderStatusChanged", payload, ct);
 
         if (customerInfo?.AssignedCoordinatorId.HasValue == true)
         {

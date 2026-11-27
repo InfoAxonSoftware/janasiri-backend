@@ -100,6 +100,7 @@ builder.Services.AddScoped<IStockReportService, StockReportService>();
 builder.Services.AddScoped<ISalesSummaryReportService, SalesSummaryReportService>();
 builder.Services.AddScoped<ITargetReportService, TargetReportService>();
 builder.Services.AddScoped<IQuickRequestService, QuickRequestService>();
+builder.Services.AddScoped<StandardRepAssignmentService>();
 builder.Services.AddScoped<IRepPaymentService, RepPaymentService>();
 
 // ===== Infrastructure Services =====

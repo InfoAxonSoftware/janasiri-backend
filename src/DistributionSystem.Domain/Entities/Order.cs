@@ -52,6 +52,8 @@ public class Order : IAuditableEntity
     // Navigation
     public CustomerProfile Customer { get; set; } = null!;
     public SalesRepProfile? Rep { get; set; }
+    public Guid? AssignmentVersion { get; set; }
+    public ICollection<OrderAdditionalRep> AdditionalReps { get; set; } = [];
     public ICollection<OrderItem> OrderItems { get; set; } = new List<OrderItem>();
     public ICollection<Payment> Payments { get; set; } = new List<Payment>();
 }

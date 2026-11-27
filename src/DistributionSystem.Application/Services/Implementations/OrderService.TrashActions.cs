@@ -94,9 +94,9 @@ public partial class OrderService
             var kind = item.Kind == OrderKind ? PersonalRecordTrash.OrderKind : PersonalRecordTrash.QuickRequestKind;
             var allowed = item.Kind == OrderKind
                 ? await _unitOfWork.Repository<Order>().Query().AnyAsync(o => o.Id == item.Id &&
-                    o.RepId == repId && !o.IsDeleted && !o.IsPurgedByAdmin, ct)
+                    (o.RepId == repId || o.AdditionalReps.Any(a => a.RepId == repId)) && !o.IsDeleted && !o.IsPurgedByAdmin, ct)
                 : await _unitOfWork.Repository<QuickRequest>().Query().AnyAsync(r => r.Id == item.Id &&
-                    r.Type == QuickRequestType.Order && r.RepId == repId &&
+                    r.Type == QuickRequestType.Order && (r.RepId == repId || r.AdditionalReps.Any(a => a.RepId == repId)) &&
                     !r.IsDeletedByAdmin && !r.IsPurgedByAdmin, ct);
             if (!allowed) throw new NotFoundException(item.Kind, item.Id);
             var entry = await entries.Query().FirstOrDefaultAsync(x => x.UserId == repUserId &&
@@ -131,10 +131,10 @@ public partial class OrderService
                     !o.IsDeleted && !o.IsPurgedByAdmin &&
                     (o.Customer.AssignedCoordinatorId == coordinatorId ||
                      (o.RepId.HasValue && o.Rep != null &&
-                      o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId))), ct)
+                      o.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId)) || o.AdditionalReps.Any(a => a.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId))), ct)
                 : await _unitOfWork.Repository<QuickRequest>().Query().AnyAsync(r => r.Id == item.Id &&
                     r.Type == QuickRequestType.Order && !r.IsDeletedByAdmin && !r.IsPurgedByAdmin &&
-                    r.Rep != null && r.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId), ct);
+                    ((!r.RepId.HasValue && r.CreatedBy == "Quick Order Portal") || (r.Rep != null && r.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId)) || r.AdditionalReps.Any(a => a.Rep.Coordinators.Any(rc => rc.CoordinatorId == coordinatorId))), ct);
             if (!allowed) throw new NotFoundException(item.Kind, item.Id);
 
             var entry = await entries.Query().FirstOrDefaultAsync(x => x.UserId == coordinatorUserId &&
