@@ -40,6 +40,22 @@ public class QuickRequestDto
 
 // ── Request DTOs ──────────────────────────────────────────────────────────────
 
+
+public class GuestOrderRepOptionDto
+{
+    public Guid Id { get; set; }
+    public string FullName { get; set; } = string.Empty;
+    public string EmployeeCode { get; set; } = string.Empty;
+}
+
+public class AssignGuestOrderRepDto
+{
+    [System.Text.Json.Serialization.JsonRequired]
+    public Guid? RepId { get; set; }
+    [System.Text.Json.Serialization.JsonRequired]
+    public Guid? ExpectedRepId { get; set; }
+}
+
 public class CreateQuickRequestDto
 {
     public string Type { get; set; } = string.Empty;          // "Order" | "Quotation"

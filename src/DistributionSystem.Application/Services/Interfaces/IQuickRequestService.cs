@@ -34,6 +34,10 @@ public interface IQuickRequestService
     Task<string?> GetGuestAttachmentStorageKeyAsync(string requestNumber, string phoneNumber, Guid attachmentId, CancellationToken ct = default);
 
     // Admin
+
+    Task<List<GuestOrderRepOptionDto>> GetGuestOrderRepOptionsAsync(Guid id, Guid actorId, CancellationToken ct = default);
+    Task<QuickRequestDto> AssignGuestOrderRepAsync(Guid id, Guid actorId, AssignGuestOrderRepDto dto, string updatedBy, CancellationToken ct = default);
+
     Task<List<QuickRequestDto>> GetAllAsync(string? type = null, string? status = null, CancellationToken ct = default);
     Task<QuickRequestDto> GetByIdAsync(Guid requestId, CancellationToken ct = default, bool includeAdminTrash = false);
     Task<QuickRequestDto> CreateAdminAsync(Guid adminUserId,string createdBy,CreateQuickRequestDto dto,CancellationToken ct = default);
